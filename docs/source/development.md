@@ -1,0 +1,157 @@
+# Development
+
+```{include} ../../CONTRIBUTING.md
+```
+
+## Video tutorial
+
+A short video tutorial on how to build a custom firmware version ([YouTube mirror](https://youtu.be/WrPj2_DdfjI)):
+
+<iframe width="720" height="405" src="https://rutube.ru/play/embed/1ff6fc7246260b3d404acebd0435d785?p=faQjyf7QWhT3bff2GDrReQ" frameBorder="0" allow="clipboard-write; autoplay" webkitAllowFullScreen mozallowfullscreen allowFullScreen></iframe>
+
+## Compiling the source code
+
+1. Install [Arduino CLI](https://arduino.github.io/arduino-cli/1.2/installation/).
+2. Go to the repository root folder
+3. Compile and flash the firmware
+
+```shell
+arduino-cli compile --clean -e -p COM_PORT -u ats-mini
+```
+
+Build profiles are defined in `ats-mini/sketch.yaml`. Choose the profile matching your receiver's PSRAM with `--profile`: `esp32s3-ospi` for Octal PSRAM or `esp32s3-qspi` for Quad PSRAM. Without this option, Arduino CLI uses `esp32s3-ospi`.
+
+To compile without flashing:
+
+```shell
+arduino-cli compile --clean --profile esp32s3-ospi ats-mini
+arduino-cli compile --clean --profile esp32s3-qspi ats-mini
+```
+
+Run the command for your profile. Add `-e` to export the firmware binaries, and `-p COM_PORT -u` to flash them. Arduino CLI installs the platform and library versions specified in the selected profile automatically.
+
+Omit `--clean` for faster subsequent builds, which reuse previously compiled files.
+
+When a library gets upgraded in the `sketch.yaml` project configuration file, it might be necessary to run the following commands to ensure that the Arduino CLI has the most current information about available platforms and libraries:
+
+```shell
+arduino-cli core update-index
+arduino-cli lib update-index
+```
+
+## Compile-time options
+
+The available options are:
+
+* `LILYGO_SI473X` - compile for [LILYGO T-Embed SI4732](hardware.md#lilygo-t-embed-si4732) hardware variant
+* `BLE_POWER_LEVEL` - Bluetooth LE TX power level (default: `ESP_PWR_LVL_N0`). Possible values are `ESP_PWR_LVL_N24`, `ESP_PWR_LVL_N21`, `ESP_PWR_LVL_N18`, `ESP_PWR_LVL_N15`, `ESP_PWR_LVL_N12`, `ESP_PWR_LVL_N9`, `ESP_PWR_LVL_N6`, `ESP_PWR_LVL_N3`, `ESP_PWR_LVL_N0`, `ESP_PWR_LVL_P3`, `ESP_PWR_LVL_P6`, `ESP_PWR_LVL_P9`, `ESP_PWR_LVL_P12`, `ESP_PWR_LVL_P15`, `ESP_PWR_LVL_P18`, and `ESP_PWR_LVL_P20`.
+* `WIFI_POWER_LEVEL` - Wi-Fi TX power level (default: `WIFI_POWER_17dBm`). Possible values are `WIFI_POWER_21dBm`, `WIFI_POWER_20_5dBm`, `WIFI_POWER_20dBm`, `WIFI_POWER_19_5dBm`, `WIFI_POWER_19dBm`, `WIFI_POWER_18_5dBm`, `WIFI_POWER_17dBm`, `WIFI_POWER_15dBm`, `WIFI_POWER_13dBm`, `WIFI_POWER_11dBm`, `WIFI_POWER_8_5dBm`, `WIFI_POWER_7dBm`, `WIFI_POWER_5dBm`, `WIFI_POWER_2dBm`, and `WIFI_POWER_MINUS_1dBm`.
+
+To set an option, add the `--build-property` command line argument like this:
+
+```shell
+arduino-cli compile --build-property "compiler.cpp.extra_flags=-DLILYGO_SI473X" --clean -e -p COM_PORT -u ats-mini
+```
+
+For example, to lower Bluetooth LE and Wi-Fi TX power:
+
+```shell
+arduino-cli compile --build-property "compiler.cpp.extra_flags=-DBLE_POWER_LEVEL=ESP_PWR_LVL_N12 -DWIFI_POWER_LEVEL=WIFI_POWER_13dBm" --clean -e -p COM_PORT -u ats-mini
+```
+
+## Using the make command
+
+You can do all of the above using the `make` command as well:
+
+```shell
+LILYGO_SI473X=1 PORT=/dev/tty.usbmodem14401 make upload
+```
+
+To set Bluetooth LE and Wi-Fi TX power with `make`:
+
+```shell
+BLE_POWER_LEVEL=ESP_PWR_LVL_N12 WIFI_POWER_LEVEL=WIFI_POWER_13dBm PORT=/dev/tty.usbmodem14401 make upload
+```
+
+When adding, removing, or renaming firmware source or header files, update the `SRC` and `HEADERS` lists in `ats-mini/Makefile` so `make` tracks the correct build dependencies.
+
+## Decoding stack traces
+
+To decode a stack trace (printed via serial port) use the following tool: <https://esphome.github.io/esp-stacktrace-decoder/>
+
+## Enabling the pre-commit hooks
+
+1. Install `uv` <https://docs.astral.sh/uv/getting-started/installation/>
+2. Run `uv sync`
+3. run `uv run prek install`
+
+## Adding a changelog entry
+
+1. Install `uv` <https://docs.astral.sh/uv/getting-started/installation/>
+2. Run `uv sync`
+3. Create an entry:
+   ```
+   uv run towncrier create --edit ID.CATEGORY.md
+   ```
+   `ID` is an issue or a PR number, or `+STRING` if there is no issue/PR. `CATEGORY` is one of `added`, `changed`, `fixed`, etc. see the `tool.towncrier.type` sections in the `pyproject.toml` for the full list.
+
+## Improving the documentation
+
+1. Install `uv` <https://docs.astral.sh/uv/getting-started/installation/>
+2. Run `uv sync`
+3. Run a local webserver `uv run sphinx-autobuild docs/source docs/build` and open the http://127.0.0.1:8000 in a browser
+4. Edit the Markdown files in `docs/source` folder and immediately see your changes reflected in the browser
+
+## Web pages
+
+The web UI templates live in `ats-mini/Page*.h`. Edit the HTML, CSS, and JavaScript inside the `R"HTML(...)HTML"` raw strings; no generation step is needed before compiling.
+
+`PageCommon.h` contains the shared document layout, navigation, and styles. The other page headers contain each page and its repeated fragments. `Web.cpp` supplies the values and handles requests.
+
+The renderer in `PageTemplate.h` replaces `{{name}}` with an HTML-escaped value for text or a quoted attribute. Use `{{{name}}}` only for trusted HTML fragments rendered by the firmware. Values are inserted once, so braces inside a value are not interpreted as another placeholder. These placeholders are not intended for JavaScript or CSS values.
+
+Pages render into one output buffer. Pass repeated or nested content as a lazy fragment instead of building a separate HTML string:
+
+```cpp
+pageAppend(out, "<UL>{{{items}}}</UL>", {}, {
+  {"items", [&](String &out) {
+    for(const auto &name : names)
+      pageAppend(out, "<LI>{{name}}</LI>", {{"name", name}});
+  }}
+});
+```
+
+The second list supplies callbacks for triple-brace placeholders. Callbacks run synchronously and write to the same buffer. Values and callbacks are borrowed: construct the lists in the render call and do not store them for later use.
+
+## Theme editor
+
+A terminal command <kbd>T</kbd> toggles a special mode that helps you pick the right colors faster without recompiling and flashing the firmware each time. When the theme editor is enabled, some screen elements are always visible (and various status icons change their state every couple of seconds):
+
+![](_static/theme-editor.png)
+
+Press <kbd>@</kbd> to print the current color theme to the serial console:
+
+```shell
+Color theme Default: x0000xFFFFxD69AxF800xD69Ax07E0xF800xF800xFFFFxFFFFx07E0xF800x001FxFFE0xD69AxD69AxD69Ax0000xD69AxD69AxF800xBEDFx0000xF800xFFFFxBEDFx105BxBEDFxBEDFxFFFFxD69AxF800xFFE0xD69AxFFFFxF800xC638
+```
+
+Then copy the theme to your favorite text editor, change the colors as you see (here is a handy [565 color picker](https://chrishewett.com/blog/true-rgb565-colour-picker/)).
+
+To preview the theme, paste it to the serial console with the <kbd>^</kbd> character appended:
+
+```shell
+^x0000xFFFFxD69AxF800xD69Ax07E0xF800xF800xFFFFxFFFFx07E0xF800x001FxFFE0xD69AxD69AxD69Ax0000xD69AxD69AxF800xBEDFx0000xF800xFFFFxBEDFx105BxBEDFxBEDFxFFFFxD69AxF800xFFE0xD69AxFFFFxF800xC638
+```
+
+Once you are happy, add the resulting colors to `Theme.cpp`.
+
+## Release process
+
+1. Bump the `VER_APP` constant in the `Common.h` file
+2. If the new version has a different preferences layout, bump `VER_SETTINGS`, `VER_BANDS` (bands and VFO slots), `VER_MEMORIES`, or `VER_STORAGE` as well (it will force the corresponding preferences section reset)
+3. Generate the CHANGELOG.md by running `uv run towncrier build --version X.XX`
+4. Add and commit the changes with a message like "Release X.XX", then push them to the repository
+5. Once the build is complete, download, flash and test it!
+6. Tag the release and push the tag `git tag -a vX.XX -m 'Version X.XX' && git push --follow-tags` (the tag should start with `v`!)
+
+Increase `VER_OTA` in `Common.h` when a release requires USB flashing, such as after a partition-table or bootloader change. Keep the increased value in subsequent releases so users who skip versions still receive the USB requirement. Updates between different `VER_OTA` values require USB, including downgrades.
