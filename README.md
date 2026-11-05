@@ -77,6 +77,11 @@ OSPI 版开机白屏时改刷 QSPI 版。
 `FontCN16.h` / `FontCN24.h` 由 `tools/gen_font.py` 生成（需 Pillow、freetype-py 与 Noto Sans CJK SC Light 字体）。
 修改界面文字后若出现缺字，重新执行脚本即可。
 
+## 说明
+
+上游的 GitHub Actions 配置保留在 `.github/workflows.disabled/`（`build.yml`、`docs.yml`、`lint.yml`）。
+需要启用 CI 时把它改名回 `.github/workflows/` 即可；推送这类文件要求 token 具备 `workflow` 权限。
+
 ## 许可
 
 继承上游 [LICENSE](LICENSE)。
