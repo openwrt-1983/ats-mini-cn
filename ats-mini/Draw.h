@@ -31,6 +31,8 @@
 #define WIFI_OFFSET_Y    0    // WiFi y offset
 #define BLE_OFFSET_X   104    // BLE x offset
 #define BLE_OFFSET_Y     0    // BLE y offset
+#define RSSI_SNR_OFFSET_X 318 // Right edge of the RSSI/SNR readout
+#define RSSI_SNR_OFFSET_Y  96 // Top of the RSSI/SNR readout
 
 void drawMessage(const char *msg);
 void drawZoomedMenu(const char *text, bool force = false);
@@ -42,6 +44,7 @@ void drawSaveIndicator(int x, int y);
 void drawBleIndicator(int x, int y);
 void drawBandAndMode(const char *band, const char *mode, int x, int y);
 void drawFrequency(uint32_t freq, int x, int y, int ux, int uy, uint8_t hl);
+void drawRssiSnr(int x, int y);
 void drawLongStationName(const char *name, int x, int y);
 void drawStationName(const char *name, int x, int y);
 void drawSMeter(int strength, int x, int y);

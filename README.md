@@ -33,6 +33,8 @@
 - **专业术语保留英文**：AGC、AVC、ATTN、BFO、RSSI、SNR、SSB、CW、LSB、USB、RDS、DSP、SI4732、S-Meter、BLE、HID、Wi-Fi、PSRAM、OTA 等不做翻译
 - 内置 16px / 24px 两套中文点阵字体（Noto Sans CJK SC Light 子集，只收录界面用到的字，单色无抗锯齿），不依赖外部字库
 - 字模按每个字的真实包围盒输出、中西文共用同一条基线，中英混排不再错位；笔画保持 Light 细体，小字号下依然清晰不糊
+- 屏幕右下角（刻度线上方、台名右侧的空白处）新增 `SNR n` / `RSSI n` 两行数字读数，随信号变化刷新；
+  原来这块是空的，S-Meter 只有条状指示，看不出具体数值
 
 ### 2. 新增「BLE 待机」休眠方式
 

@@ -337,6 +337,24 @@ void drawSMeter(int strength, int x, int y)
 }
 
 //
+// Draw RSSI and SNR as plain numbers in the free corner above the scale
+//
+void drawRssiSnr(int x, int y)
+{
+  char text[16];
+
+  // Clear the corner first: a long station name runs across the whole width.
+  spr.fillRect(x - 66, y - 2, 320 - (x - 66) - 1, 34, TH.bg);
+
+  spr.setTextDatum(TR_DATUM);
+  spr.setTextColor(TH.rds_text);
+  snprintf(text, sizeof(text), "SNR %u", snr);
+  spr.drawString(text, x, y, FONT_SMALL);
+  snprintf(text, sizeof(text), "RSSI %u", rssi);
+  spr.drawString(text, x, y + 16, FONT_SMALL);
+}
+
+//
 // Draw stereo indicator
 //
 void drawStereoIndicator(int x, int y, bool stereo)

@@ -73,4 +73,7 @@ void drawLayoutDefault()
     else
       drawScale(currentFrequency);
   }
+
+  // Draw RSSI and SNR last: it sits in a corner that a long station name may run into.
+  drawRssiSnr(RSSI_SNR_OFFSET_X, RSSI_SNR_OFFSET_Y);
 }
