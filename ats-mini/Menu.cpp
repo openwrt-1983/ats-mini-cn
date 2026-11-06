@@ -2263,19 +2263,28 @@ static void drawInfo(int x, int y, int sx)
     spr.drawString(text, 48+x, 64+y + (1*16), FONT_SMALL);
   }
 
-  // Show the running countdown; with both timers set they take turns.
+  // One line only has room for one item, so everything that is running takes
+  // turns: both countdowns and the clock. With a single item there is nothing
+  // to rotate, so the line stays steady instead of blinking.
   const char *clock = clockGet();
   uint16_t offMinutes = offTimerRemainingMinutes();
   uint16_t stbyMinutes = standbyTimerRemainingMinutes();
-  bool showOff = offMinutes && (!stbyMinutes || millis() / BACKGROUND_REFRESH_TIME % 2 == 0);
-  uint16_t countdown = showOff ? offMinutes : stbyMinutes;
-  if(countdown)
+  uint8_t slots = (offMinutes ? 1 : 0) + (stbyMinutes ? 1 : 0) + (clock ? 1 : 0);
+  uint8_t slot = slots ? (uint8_t)((millis() / BACKGROUND_REFRESH_TIME) % slots) : 0;
+  uint8_t pick = 0xFF; // 0xFF: nothing to show
+  uint8_t position = 0;
+  if(offMinutes)  { if(slot == position) pick = 0; position++; }
+  if(stbyMinutes) { if(slot == position) pick = 1; position++; }
+  if(clock && slot == position) pick = 2;
+
+  if(pick == 0 || pick == 1)
   {
+    uint16_t countdown = pick == 0 ? offMinutes : stbyMinutes;
     snprintf(text, sizeof(text), "%02u:%02u", countdown / 60, countdown % 60);
-    spr.drawString(showOff ? "Zzz:" : "待机:", 6+x, 64+y+(2*16), FONT_SMALL);
+    spr.drawString(pick == 0 ? "Zzz:" : "待机:", 6+x, 64+y+(2*16), FONT_SMALL);
     spr.drawString(text, 48+x, 64+y+(2*16), FONT_SMALL);
   }
-  else if(clock)
+  else if(pick == 2)
   {
     uint16_t year;
     uint8_t month, day, weekday;
