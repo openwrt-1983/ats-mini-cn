@@ -118,9 +118,16 @@ bool bleLoop(uint8_t bleMode)
   if (bleMode == BLE_ADHOC)
   {
     // Bluetooth standby and CPU sleep both keep the BLE link alive, so data
-    // from the app wakes the receiver in either mode.
+    // from the app wakes the receiver in either mode. The housekeeping commands
+    // are the exception: 't' (log toggle) and 'g' (status stream on) only keep
+    // the stream alive and must not wake the unit, otherwise the app's own
+    // keep-alive poked it awake right after 'O' and standby could never stick.
     if(sleepOn() && sleepKeepsBle() && BLESerial.available() > 0)
-      sleepOn(false);
+    {
+      const int next = BLESerial.peek();
+      if(next >= 0 && next != 't' && next != 'g' && next != '\r' && next != '\n')
+        sleepOn(false);
+    }
     return remoteLoop(&BLESerial, &remoteBLEState, bleReadInput);
   }
 

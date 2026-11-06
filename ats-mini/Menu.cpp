@@ -362,7 +362,7 @@ int getTotalTCPModes() { return(ITEM_COUNT(tcpModeDesc)); }
 //
 
 uint8_t bleModeIdx = BLE_OFF;
-static uint8_t bleModeMenuIdx = BLE_OFF;
+uint8_t bleModeMenuIdx = BLE_OFF;
 const char *const bleModeDesc[] =
 { "关", "Ad hoc", "HID", "清除配对" };
 

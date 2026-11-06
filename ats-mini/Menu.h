@@ -97,6 +97,17 @@ typedef struct
 
 extern Band bands[];
 extern uint8_t memoryIdx;
+// Menu cursors, exported so the remote status line can report where the
+// receiver actually is instead of letting the app guess it.
+extern int8_t menuIdx;
+extern int8_t settingsIdx;
+extern uint8_t sleepModeIdx;
+extern uint8_t fmStereoIdx;
+extern uint8_t usbModeIdx;
+extern uint8_t tcpModeIdx;
+extern uint8_t bleModeMenuIdx;
+extern uint8_t wifiModeIdx;
+extern uint8_t rdsModeIdx;
 extern const UTCOffset utcOffsets[];
 extern const char *bandModeDesc[];
 extern const FMRegion fmRegions[];

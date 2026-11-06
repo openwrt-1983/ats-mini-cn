@@ -104,11 +104,25 @@ ParseResult parseAdhoc(ByteSpan frame, AdhocCommand& out) {
     case 'l': out.id = Id::BacklightDown; break;
     case 'O': out.id = Id::SleepOn; break;
     case 'o': out.id = Id::SleepOff; break;
+    // Enter Bluetooth standby regardless of the configured sleep mode ('Z' for
+    // Zzz). Plain 'O' honours whatever mode the user picked in the settings
+    // menu, so on a unit set to CPU sleep the link died and the app could not
+    // wake it again. This one always keeps BLE up.
+    case 'Z': out.id = Id::Standby; break;
+    // Wake up and leave the unit configured for "CPU sleep" (screen off, radio
+    // still playing). Matches what a long press does once the sleep mode is set
+    // to CPU sleep, so the encoder's own long press behaves the same from then
+    // on. 'y' because 'w'/'W' are taken by the bandwidth keys and 'c' by the
+    // screenshot capture.
+    case 'y': out.id = Id::WakeLight; break;
     case 'I': out.id = Id::CalUp; break;
     case 'i': out.id = Id::CalDown; break;
     case 'C': out.id = Id::CaptureScreen; break;
     case 'c': out.id = Id::CaptureScreenBinary; break;
     case 't': out.id = Id::ToggleLog; break;
+    // Idempotent counterpart of 't': turns the status stream on without ever
+    // turning it off, so an app watchdog can re-arm it repeatedly.
+    case 'g': out.id = Id::MonitorOn; break;
     case '$': out.id = Id::GetMemories; break;
     case 'T': out.id = Id::ToggleThemeEditor; break;
     case '@': out.id = Id::GetTheme; break;

@@ -224,6 +224,28 @@ static void remoteGetColorTheme(Stream* stream)
 }
 
 //
+// Highlighted entry of the panel currently on screen. All list-style panels
+// share this single field, so the app does not need to mirror every separate
+// *Idx variable the firmware keeps.
+//
+static unsigned remoteOptionIndex()
+{
+  switch(currentCmd)
+  {
+    case CMD_UI:        return uiLayoutIdx;
+    case CMD_SLEEPMODE: return sleepModeIdx;
+    case CMD_FM_STEREO: return fmStereoIdx;
+    case CMD_USBMODE:   return usbModeIdx;
+    case CMD_TCPMODE:   return tcpModeIdx;
+    case CMD_BLEMODE:   return bleModeMenuIdx;
+    case CMD_WIFIMODE:  return wifiModeIdx;
+    case CMD_RDS:       return rdsModeIdx;
+    case CMD_MEMORY:    return memoryIdx;
+    default:            return 0;
+  }
+}
+
+//
 // Print current status to the remote
 //
 static void remotePrintStatus(Stream* stream, RemoteState* state)
@@ -240,8 +262,12 @@ static void remotePrintStatus(Stream* stream, RemoteState* state)
   rx.getFrequency();
   uint16_t tuningCapacitor = rx.getAntennaTuningCapacitor();
 
-  // Remote serial
-  stream->printf("%u,%u,%d,%d,%s,%s,%s,%s,%hu,%hu,%hu,%hu,%hu,%.2f,%hu\r\n",
+  // Remote serial. The first 15 fields keep their original order so older
+  // apps still parse them unchanged. The fields after them describe where the
+  // receiver is right now, which is what lets the app mirror the real screen
+  // instead of inferring the active panel from whichever value changed.
+  stream->printf("%u,%u,%d,%d,%s,%s,%s,%s,%hu,%hu,%hu,%hu,%hu,%.2f,%hu"
+                 ",%u,%u,%u,%u,%u,%d,%d,%u,%u,%u,%u,%u,%u,%u\r\n",
                 VER_APP,
                 getReceiverFrequency(currentFrequency),
                 getCurrentBFO(),
@@ -257,7 +283,23 @@ static void remotePrintStatus(Stream* stream, RemoteState* state)
                 remoteSnr,
                 tuningCapacitor,
                 remoteVoltage,
-                state->remoteSeqnum
+                state->remoteSeqnum,
+                (unsigned)currentCmd,                   // 15: active screen
+                (unsigned)currentBrt,                   // 16: backlight
+                (unsigned)(sleepOn() ? 1 : 0),          // 17: display asleep
+                (unsigned)(muteOn(MUTE_MAIN) ? 1 : 0),  // 18: muted
+                (unsigned)uiLayoutIdx,                  // 19: main layout
+                (int)menuIdx,                           // 20: main menu cursor
+                (int)settingsIdx,                       // 21: settings cursor
+                (unsigned)standbyTimerRemainingMinutes(), // 22: standby timer
+                (unsigned)offTimerRemainingMinutes(),     // 23: power-off timer
+                (unsigned)currentSleep,                 // 24: sleep timer (s)
+                (unsigned)(encoderHalfStep ? 1 : 0),    // 25: encoder detents
+                (unsigned)((currentMode == FM &&
+                            fmStereoIdx != FM_STEREO_MONO &&
+                            rx.getCurrentPilot()) ? 1 : 0), // 26: FM stereo pilot
+                remoteOptionIndex(),                    // 27: highlighted option
+                (unsigned)vfoIdx                        // 28: VFO A/B
                 );
 }
 
@@ -291,6 +333,35 @@ static bool remoteExecuteCommand(Stream* stream, RemoteState* state, const Adhoc
     case Id::CalDown:     doCal(-1); break;
     case Id::SleepOn:     sleepOn(true); return true;
     case Id::SleepOff:    sleepOn(false); return true;
+    // Force Bluetooth standby: screen, audio and receiver off, BLE radio stays
+    // up so the app can still reach the unit and wake it with 'o'.
+    //
+    // This is exactly what the receiver does by itself when sleep mode is set
+    // to "BLE standby" (SLEEP_BLE_KEEPALIVE) and the encoder is long pressed,
+    // except that it must not depend on how the unit happens to be configured:
+    // with the shipped default (SLEEP_LOCKED) a plain 'O' only blanks the
+    // panel and the radio keeps playing. So store the mode as well, which also
+    // makes the unit's own long press behave the same way from now on.
+    case Id::Standby:
+      if(sleepModeIdx != SLEEP_BLE_KEEPALIVE)
+      {
+        sleepModeIdx = SLEEP_BLE_KEEPALIVE;
+        prefsRequestSave(SAVE_SETTINGS);
+      }
+      standbyEnter();
+      return true;
+    // Wake up, then leave the sleep mode on "CPU sleep" (SLEEP_LIGHT): screen
+    // off, radio keeps playing, BLE stays reachable. Waking first matters —
+    // sleepOn(false) decides what to restore from the *current* mode, so
+    // switching the mode beforehand would skip the receiver bring-up.
+    case Id::WakeLight:
+      sleepOn(false);
+      if(sleepModeIdx != SLEEP_LIGHT)
+      {
+        sleepModeIdx = SLEEP_LIGHT;
+        prefsRequestSave(SAVE_SETTINGS);
+      }
+      return true;
     case Id::SetMemory:
       if(!remoteSetMemory(stream, command)) return false;
       prefsRequestSave(SAVE_MEMORIES);
@@ -306,6 +377,10 @@ static bool remoteExecuteCommand(Stream* stream, RemoteState* state, const Adhoc
       return false;
     case Id::ToggleLog:
       state->remoteLogOn = !state->remoteLogOn;
+      return false;
+    case Id::MonitorOn:
+      // Idempotent: safe for the app to repeat, unlike ToggleLog.
+      state->remoteLogOn = true;
       return false;
     case Id::GetMemories:
       remoteGetMemories(stream);
