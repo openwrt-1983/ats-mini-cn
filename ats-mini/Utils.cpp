@@ -292,13 +292,10 @@ bool sleepOn(int x)
     }
     else if(sleepModeIdx == SLEEP_LIGHT)
     {
-      // CPU sleep also keeps the Bluetooth link alive: Wi-Fi is shut down and
-      // the CPU is throttled to save power, but the radio and the BLE stack
-      // stay up so the app can reconnect or send a command that wakes us.
+      // CPU sleep only drops the display, Wi-Fi and CPU clock: the radio keeps
+      // playing, so audio is deliberately left untouched. The BLE stack also
+      // stays up, so the app can reconnect or send a command that wakes us.
       netStop();
-      bleStandbyMuted = !muteOn(MUTE_MAIN);
-      if(bleStandbyMuted) muteOn(MUTE_MAIN, true, true);
-      if(PIN_AMP_EN >= 0) digitalWrite(PIN_AMP_EN, LOW);
       setCpuFrequencyMhz(80);
     }
   }
@@ -306,11 +303,13 @@ bool sleepOn(int x)
   {
     sleep_on = false;
     // Restore audio before the display comes back up.
-    if(sleepModeIdx == SLEEP_BLE_KEEPALIVE || sleepModeIdx == SLEEP_LIGHT)
+    if(sleepModeIdx == SLEEP_LIGHT) setCpuFrequencyMhz(240);
+    if(bleStandbyMuted)
     {
-      if(sleepModeIdx == SLEEP_LIGHT) setCpuFrequencyMhz(240);
+      // Only undo the mute we applied on entry, so a mute the user set
+      // beforehand is not cleared when the display wakes up.
       if(PIN_AMP_EN >= 0) digitalWrite(PIN_AMP_EN, HIGH);
-      if(bleStandbyMuted) muteOn(MUTE_MAIN, false, true);
+      muteOn(MUTE_MAIN, false, true);
       bleStandbyMuted = false;
     }
     tft.wakeup();

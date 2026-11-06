@@ -683,8 +683,9 @@ bool processRssiSnr()
 bool handleRotation(int16_t enc, int16_t accelerated, bool pressed)
 {
   if(!enc) return false;
-  // In Bluetooth standby any input wakes the receiver and is processed.
-  if(sleepOn() && sleepModeIdx == SLEEP_BLE_KEEPALIVE) sleepOn(false);
+  // In Bluetooth standby or CPU sleep (which keeps BLE alive) any input
+  // wakes the receiver and is processed.
+  if(sleepOn() && (sleepModeIdx == SLEEP_BLE_KEEPALIVE || sleepModeIdx == SLEEP_LIGHT)) sleepOn(false);
   else if(sleepOn() && sleepModeIdx == SLEEP_LOCKED) return false;
   bool changed = false;
   if(pressed)
@@ -737,8 +738,9 @@ bool handleClick(bool shortPress)
   elapsedSleep = elapsedCommand = millis();
   if(sleepOn())
   {
-    // Bluetooth standby wakes on any click so the app can control the receiver.
-    if(sleepModeIdx == SLEEP_BLE_KEEPALIVE) sleepOn(false);
+    // Bluetooth standby and CPU sleep (which keeps BLE alive) wake on any
+    // click so the app can control the receiver.
+    if(sleepModeIdx == SLEEP_BLE_KEEPALIVE || sleepModeIdx == SLEEP_LIGHT) sleepOn(false);
     else if(currentSleep)
       sleepOn(false);
     else if(sleepModeIdx == SLEEP_UNLOCKED)

@@ -117,8 +117,9 @@ bool bleLoop(uint8_t bleMode)
   if(bleMode != BLE_HID) hidPushAndRotate = false;
   if (bleMode == BLE_ADHOC)
   {
-    // Bluetooth standby wakes up as soon as the app sends anything.
-    if(sleepOn() && sleepModeIdx == SLEEP_BLE_KEEPALIVE && BLESerial.available() > 0)
+    // Bluetooth standby and CPU sleep both keep the BLE link alive, so data
+    // from the app wakes the receiver in either mode.
+    if(sleepOn() && (sleepModeIdx == SLEEP_BLE_KEEPALIVE || sleepModeIdx == SLEEP_LIGHT) && BLESerial.available() > 0)
       sleepOn(false);
     return remoteLoop(&BLESerial, &remoteBLEState, bleReadInput);
   }

@@ -1,0 +1,1 @@
+CPU sleep (light sleep) no longer silences the receiver: only the display, Wi-Fi and CPU clock are dropped, while audio mute and amplifier enable are left untouched, so the radio keeps playing with the screen off. Waking also stops force-enabling the amplifier when the user had muted the radio.

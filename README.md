@@ -17,7 +17,8 @@
 - 主菜单 14 项、设置菜单 22 项、各类状态提示、OTA 升级消息、关于页面全部汉化
 - Web 管理页面全部汉化：状态、记忆频道、设置、Wi-Fi、固件升级、补丁 6 个页面，含按钮、表头、提示语、JS 报错信息
 - **专业术语保留英文**：AGC、AVC、ATTN、BFO、RSSI、SNR、SSB、CW、LSB、USB、RDS、DSP、SI4732、S-Meter、BLE、HID、Wi-Fi、PSRAM、OTA 等不做翻译
-- 内置 16px / 24px 两套中文点阵字体（Noto Sans CJK SC Light 子集，只收录界面用到的字，单色无抗锯齿，细且锐利），不依赖外部字库；缺字检查已通过
+- 内置 16px / 24px 两套中文点阵字体（Noto Sans CJK SC Light 子集，只收录界面用到的字，单色无抗锯齿），不依赖外部字库
+- 字模按每个字的真实包围盒输出、中西文共用同一条基线，中英混排不再错位；笔画保持 Light 细体，小字号下依然清晰不糊
 
 ### 2. 新增「BLE 待机」休眠方式
 
@@ -27,7 +28,10 @@
 - 手机 App 仍可随时连接并控制，无需先唤醒设备
 - 旋转编码器或按一下按键立即唤醒
 
-「CPU 睡眠」模式也同步改为在深睡前后**保留蓝牙后台广播**（进入前关闭射频以外的外设，唤醒后自动恢复），不再像原版那样直接断掉 BLE。
+「CPU 睡眠」模式同样保留蓝牙后台：熄屏、关 Wi-Fi、CPU 降到 80 MHz，但蓝牙协议栈继续运行并持续广播，
+手机 App 可随时发现并连接，收到 App 指令即自动唤醒点亮屏幕，不再像原版那样直接断掉 BLE。
+该模式下**收音机不断音**——只关屏幕背光、Wi-Fi 和主频，音频静音与功放使能保持原样，
+所以合上屏幕后可以继续听台，省电的同时不影响收听。
 
 ### 3. 修复蓝牙断连后无法重连
 
@@ -74,8 +78,19 @@ OSPI 版开机白屏时改刷 QSPI 版。
 
 ## 字体再生成
 
-`FontCN16.h` / `FontCN24.h` 由 `tools/gen_font.py` 生成（需 Pillow、freetype-py 与 Noto Sans CJK SC Light 字体）。
-修改界面文字后若出现缺字，重新执行脚本即可。
+`FontCN16.h` / `FontCN24.h` 由 `tools/gen_font.py` 生成（需 freetype-py，源字体不随仓库分发）：
+
+```
+# 一次性准备：下载 Noto Sans CJK SC Light（约 16 MB）
+curl -L -o tools/NotoSansCJKsc-Light.otf \
+  https://github.com/notofonts/noto-cjk/raw/main/Sans/OTF/SimplifiedChinese/NotoSansCJKsc-Light.otf
+pip install freetype-py
+
+python3 tools/gen_font.py --font tools/NotoSansCJKsc-Light.otf
+```
+
+脚本会扫描固件源码里的全部中文字符，按真实包围盒生成字模并共用同一基线，生成后自动逐字校验解码是否正确。
+修改界面文字后重新执行脚本即可。
 
 ## 说明
 
