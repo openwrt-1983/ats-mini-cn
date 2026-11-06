@@ -47,7 +47,9 @@
 #define CMD_FM_STEREO  0x3300 // |
 #define CMD_DSP_PATCHES 0x3400 // |
 #define CMD_ABOUT      0x3500 // |
-#define CMD_OFFTIMER   0x3600 //-+
+#define CMD_OFFTIMER   0x3600 // |
+#define CMD_STBYTIMER  0x3700 // |
+#define CMD_ENCODER    0x3800 //-+
 
 // UI Layouts
 #define UI_DEFAULT  0

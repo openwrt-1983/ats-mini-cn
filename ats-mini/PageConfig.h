@@ -33,7 +33,7 @@ static const char pageConfig[] PROGMEM = R"HTML(<H1>{{title}}</H1>
     <TR><TD CLASS="LABEL">蓝牙模式</TD><TD><SELECT NAME="blemode">{{{ble_options}}}</SELECT></TD></TR>
     <TR><TH COLSPAN="2" CLASS="HEADING">硬件</TH></TR>
     <TR><TD CLASS="LABEL">音频钳位</TD><TD><INPUT TYPE="CHECKBOX" NAME="audioclamp" VALUE="on" {{audio_clamp}}><BR><SMALL>接收机带音频钳位电路时开启</SMALL></TD></TR>
-    <TR><TD CLASS="LABEL">编码器半步解码</TD><TD><INPUT TYPE="CHECKBOX" NAME="encoderhalfstep" VALUE="on" {{half_step}}><BR><SMALL>30 定位点 / 15 电周期的编码器请开启</SMALL></TD></TR>
+    <TR><TD CLASS="LABEL">编码器半步解码</TD><TD><INPUT TYPE="CHECKBOX" NAME="encoderhalfstep" VALUE="on" {{half_step}}><BR><SMALL>30 定位点 / 15 电周期请开启；20 定位点（EC11 等）请关闭。设备设置菜单的「编码器」是同一设置</SMALL></TD></TR>
     <TR><TH COLSPAN="2" CLASS="HEADING">开机画面</TH></TR>
     <TR><TD CLASS="LABEL">当前图片</TD><TD>{{{splash}}}</TD></TR>
     <TR>

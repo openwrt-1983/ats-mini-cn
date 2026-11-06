@@ -234,6 +234,7 @@ void setup()
 
   // Start a fresh countdown using the configured duration.
   offTimerRestart();
+  standbyTimerRestart();
 
   // If loading memories fails, save default memories
   if(!prefsLoad(SAVE_MEMORIES|SAVE_VERIFY)) prefsSave(SAVE_MEMORIES);
@@ -688,7 +689,7 @@ bool handleRotation(int16_t enc, int16_t accelerated, bool pressed)
   if(!enc) return false;
   // In Bluetooth standby or CPU sleep (which keeps BLE alive) any input
   // wakes the receiver and is processed.
-  if(sleepOn() && (sleepModeIdx == SLEEP_BLE_KEEPALIVE || sleepModeIdx == SLEEP_LIGHT)) sleepOn(false);
+  if(sleepOn() && sleepKeepsBle()) sleepOn(false);
   else if(sleepOn() && sleepModeIdx == SLEEP_LOCKED) return false;
   bool changed = false;
   if(pressed)
@@ -743,7 +744,7 @@ bool handleClick(bool shortPress)
   {
     // Bluetooth standby and CPU sleep (which keeps BLE alive) wake on any
     // click so the app can control the receiver.
-    if(sleepModeIdx == SLEEP_BLE_KEEPALIVE || sleepModeIdx == SLEEP_LIGHT) sleepOn(false);
+    if(sleepKeepsBle()) sleepOn(false);
     else if(currentSleep)
       sleepOn(false);
     else if(sleepModeIdx == SLEEP_UNLOCKED)
@@ -774,13 +775,18 @@ void loop()
 {
   webScreenshotTick();
   offTimerTick();
+  standbyTimerTick();
   bool needRedraw = false;
   uint32_t encCounts = consumeEncoderCounts();
   int16_t encCount = (int16_t)(encCounts & 0xFFFF);
   int16_t encCountAccel = (int16_t)(encCounts >> 16);
   ButtonTracker::State button = pb1.update(digitalRead(ENCODER_PUSH_BUTTON) == LOW);
 
-  if(encCount && sleepOn() && sleepModeIdx == SLEEP_LOCKED)
+  // Only a sleep mode that keeps Bluetooth running can be woken by the
+  // encoder. Use sleepKeepsBle() rather than the configured mode alone: the
+  // standby timer can force Bluetooth standby while "lock" is configured, and
+  // dropping the counts there would leave the encoder unable to wake the unit.
+  if(encCount && sleepOn() && !sleepKeepsBle())
     encCount = encCountAccel = 0;
   // Keep gesture ownership separate: releasing one control must not clear
   // a held gesture on the other, or affect physical long-press handling.

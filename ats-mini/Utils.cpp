@@ -26,9 +26,23 @@ static bool bleStandbyMuted = false;
 // wake path re-runs the cold start sequence and re-applies the current band.
 static bool radioStandbyOn = false;
 
+// The standby timer can enter Bluetooth standby even when another sleep mode
+// is configured. The override only lasts until the display wakes up.
+static bool standbyForced = false;
+
 bool radioInStandby()
 {
   return radioStandbyOn;
+}
+
+bool sleepIsBleStandby()
+{
+  return sleepModeIdx == SLEEP_BLE_KEEPALIVE || standbyForced;
+}
+
+bool sleepKeepsBle()
+{
+  return sleepIsBleStandby() || sleepModeIdx == SLEEP_LIGHT;
 }
 
 static void radioStandbyEnter()
@@ -45,8 +59,9 @@ static void radioStandbyLeave()
   if(!radioStandbyOn) return;
   // Power down wipes the tuning state and any DSP patch: bring the chip back
   // up like a cold start, then reselect the band so frequency, bandwidth,
-  // AGC/AVC and patch state are all restored.
-  rx.setup(RESET_PIN, MW_BAND_TYPE);
+  // AGC/AVC and patch state are all restored. Starting in the band's own mode
+  // (FM vs AM) saves the extra mode switch selectBand() would otherwise do.
+  rx.setup(RESET_PIN, bands[bandIdx].bandType == FM_BAND_TYPE ? FM_BAND_TYPE : MW_BAND_TYPE);
   patchesResetLoaded();
   selectBand(bandIdx, false);
   rx.setVolume(volume);
@@ -58,20 +73,70 @@ static void radioStandbyLeave()
 uint16_t offTimerMinutes = 0;
 static int64_t offTimerDeadline = 0;
 
+// In the last minutes before a scheduled power off, drop Wi-Fi and Bluetooth so
+// the unit is already offline when it goes down instead of tearing the links
+// down at the very last moment.
+#define OFF_TIMER_QUIET_US ((int64_t)3 * 60000000)
+static bool offTimerQuiet = false;
+// Restoring the links can block for seconds (Wi-Fi association), so it is
+// deferred to the timer tick instead of running inside the encoder handler.
+static bool offTimerQuietRestore = false;
+
 static int64_t offTimerRemainingUs()
 {
   int64_t remaining = offTimerDeadline - esp_timer_get_time();
   return offTimerDeadline && remaining > 0 ? remaining : 0;
 }
 
+static void offTimerQuietEnter()
+{
+  if(offTimerQuiet) return;
+  offTimerQuiet = true;
+  offTimerQuietRestore = false;
+  netStop();
+  bleStop();
+}
+
+static void offTimerQuietLeave()
+{
+  if(!offTimerQuiet) return;
+  offTimerQuiet = false;
+  offTimerQuietRestore = true;
+}
+
 void offTimerRestart()
 {
   offTimerDeadline = offTimerMinutes ? esp_timer_get_time() + (int64_t)offTimerMinutes * 60000000 : 0;
+  // Pushing the deadline out of the quiet window gives the links back.
+  if(offTimerQuiet && (!offTimerDeadline || offTimerRemainingUs() > OFF_TIMER_QUIET_US))
+    offTimerQuietLeave();
 }
 
 uint16_t offTimerRemainingMinutes()
 {
   return (offTimerRemainingUs() + 59999999) / 60000000;
+}
+
+// Standby timer: same countdown, but it enters Bluetooth standby at the end
+// instead of powering the receiver off. It fires once, so waking up does not
+// drop straight back into standby.
+uint16_t standbyTimerMinutes = 0;
+static int64_t standbyTimerDeadline = 0;
+
+static int64_t standbyTimerRemainingUs()
+{
+  int64_t remaining = standbyTimerDeadline - esp_timer_get_time();
+  return standbyTimerDeadline && remaining > 0 ? remaining : 0;
+}
+
+void standbyTimerRestart()
+{
+  standbyTimerDeadline = standbyTimerMinutes ? esp_timer_get_time() + (int64_t)standbyTimerMinutes * 60000000 : 0;
+}
+
+uint16_t standbyTimerRemainingMinutes()
+{
+  return (standbyTimerRemainingUs() + 59999999) / 60000000;
 }
 
 static void holdOutputLow(int pin)
@@ -84,7 +149,10 @@ static void holdOutputLow(int pin)
 
 void receiverShutdown()
 {
-  muteOn(MUTE_FORCE, true, true);
+  // Bluetooth standby already muted the audio and cut the amplifier, and the
+  // tuner is powered down, so touching them again would only poke a sleeping
+  // chip (and, on boards without the clamp, drive AUDIO_MUTE the wrong way).
+  if(!radioInStandby()) muteOn(MUTE_FORCE, true, true);
   netStop();
   bleStop();
   prefsSave();
@@ -116,7 +184,48 @@ void receiverShutdown()
 
 void offTimerTick()
 {
-  if(offTimerDeadline && !offTimerRemainingUs()) receiverShutdown();
+  // Bring the links back outside the input handlers: Wi-Fi association can
+  // block for seconds, and doing it while a menu item is being turned stalls
+  // the encoder. Skip it if the deadline moved back into the quiet window.
+  if(offTimerQuietRestore && (!offTimerDeadline || offTimerRemainingUs() > OFF_TIMER_QUIET_US))
+  {
+    offTimerQuietRestore = false;
+    netInit(wifiModeIdx);
+    bleInit(bleModeIdx);
+    // Stay on the slow advertising interval if the unit is still in standby.
+    if(sleepOn() && sleepIsBleStandby()) bleStandbyAdvertising(true);
+  }
+
+  if(!offTimerDeadline) return;
+  if(!offTimerRemainingUs())
+  {
+    receiverShutdown();
+    return;
+  }
+  // Last minutes: go offline early instead of at the moment of the shutdown.
+  if(offTimerRemainingUs() <= OFF_TIMER_QUIET_US) offTimerQuietEnter();
+}
+
+void standbyTimerTick()
+{
+  if(!standbyTimerDeadline) return;
+  if(standbyTimerRemainingUs()) return;
+  // The off timer already took Wi-Fi and Bluetooth offline for its final
+  // minutes. Going into standby now would leave no way to wake the unit over
+  // Bluetooth and it is about to power off anyway, so hold the deadline: if the
+  // off timer is pushed past the quiet window the standby fires afterwards.
+  if(offTimerQuiet) return;
+  // One shot: clear the deadline before sleeping, otherwise the next loop after
+  // a wake-up would drop straight back into standby. The stored duration is
+  // cleared too, so the settings entry reads "off" instead of showing a
+  // countdown that will never fire again.
+  standbyTimerDeadline = 0;
+  if(standbyTimerMinutes)
+  {
+    standbyTimerMinutes = 0;
+    prefsRequestSave(SAVE_SETTINGS);
+  }
+  standbyEnter();
 }
 
 // Time
@@ -299,6 +408,21 @@ bool muteOn(uint8_t mode, int x, bool muteAmp)
 }
 
 //
+// Everything Bluetooth standby shuts down, so it can also be applied on top of
+// an already dark display (the standby timer may fire while CPU sleep is on).
+//
+static void bleStandbyEnter()
+{
+  bleStandbyMuted = !muteOn(MUTE_MAIN);
+  if(bleStandbyMuted) muteOn(MUTE_MAIN, true, true);
+  if(PIN_AMP_EN >= 0) digitalWrite(PIN_AMP_EN, LOW);
+  netStop();
+  radioStandbyEnter();
+  setCpuFrequencyMhz(80);
+  bleStandbyAdvertising(true);
+}
+
+//
 // Turn sleep on (1) or off (0), or get current status (2)
 //
 bool sleepOn(int x)
@@ -316,18 +440,12 @@ bool sleepOn(int x)
     while(pb1.update(digitalRead(ENCODER_PUSH_BUTTON) == LOW).isPressed)
       delay(100);
 
-    if(sleepModeIdx == SLEEP_BLE_KEEPALIVE)
+    if(sleepIsBleStandby())
     {
       // TV style standby: the panel, the audio path and the receiver are all
       // shut down; only the BLE radio keeps running so the app can find the
       // unit and wake it. The station state is restored on wake.
-      bleStandbyMuted = !muteOn(MUTE_MAIN);
-      if(bleStandbyMuted) muteOn(MUTE_MAIN, true, true);
-      if(PIN_AMP_EN >= 0) digitalWrite(PIN_AMP_EN, LOW);
-      netStop();
-      radioStandbyEnter();
-      setCpuFrequencyMhz(80);
-      bleStandbyAdvertising(true);
+      bleStandbyEnter();
     }
     else if(sleepModeIdx == SLEEP_LIGHT)
     {
@@ -342,18 +460,21 @@ bool sleepOn(int x)
   {
     sleep_on = false;
     // Bring the CPU and the receiver back before touching audio or display.
-    if(sleepModeIdx == SLEEP_LIGHT || sleepModeIdx == SLEEP_BLE_KEEPALIVE)
+    if(sleepModeIdx == SLEEP_LIGHT || sleepIsBleStandby())
       setCpuFrequencyMhz(240);
     bleStandbyAdvertising(false);
     radioStandbyLeave();
     if(bleStandbyMuted)
     {
       // Only undo the mute we applied on entry, so a mute the user set
-      // beforehand is not cleared when the display wakes up.
-      if(PIN_AMP_EN >= 0) digitalWrite(PIN_AMP_EN, HIGH);
+      // beforehand is not cleared when the display wakes up. muteOn() re-enables
+      // the amplifier itself after unmuting, which keeps the order clean and
+      // avoids an enable thump.
       muteOn(MUTE_MAIN, false, true);
       bleStandbyMuted = false;
     }
+    // A standby started by the timer lasts until the next wake.
+    standbyForced = false;
     tft.wakeup();
     delay(120); // Let the panel stabilize before redrawing and enabling the backlight.
     drawScreen();
@@ -365,6 +486,24 @@ bool sleepOn(int x)
   }
 
   return(sleep_on);
+}
+
+//
+// Enter Bluetooth standby now, whatever the configured sleep mode is. Used by
+// the standby timer; the override is dropped on the next wake.
+//
+bool standbyEnter()
+{
+  standbyForced = true;
+  if(!sleepOn())
+  {
+    sleepOn(true);
+    return(true);
+  }
+  // Already dark in another mode: apply standby on top without flashing the
+  // panel, so a running CPU sleep turns into a power saving standby.
+  if(!radioInStandby()) bleStandbyEnter();
+  return(true);
 }
 
 //

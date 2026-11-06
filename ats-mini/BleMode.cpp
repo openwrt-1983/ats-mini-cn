@@ -119,7 +119,7 @@ bool bleLoop(uint8_t bleMode)
   {
     // Bluetooth standby and CPU sleep both keep the BLE link alive, so data
     // from the app wakes the receiver in either mode.
-    if(sleepOn() && (sleepModeIdx == SLEEP_BLE_KEEPALIVE || sleepModeIdx == SLEEP_LIGHT) && BLESerial.available() > 0)
+    if(sleepOn() && sleepKeepsBle() && BLESerial.available() > 0)
       sleepOn(false);
     return remoteLoop(&BLESerial, &remoteBLEState, bleReadInput);
   }
@@ -147,7 +147,7 @@ bool bleLoop(uint8_t bleMode)
 
   BleHidState input = BLEHid.update();
   if(!input.isPressed) hidPushAndRotate = false;
-  else if(input.rotation && !(sleepOn() && sleepModeIdx == SLEEP_LOCKED))
+  else if(input.rotation && (!sleepOn() || sleepKeepsBle()))
     hidPushAndRotate = true;
   if(input.rotation)
     return handleRotation(input.rotation, input.rotation, input.isPressed);

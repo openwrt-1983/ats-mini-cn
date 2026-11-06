@@ -124,23 +124,28 @@ static const char *menu[] =
 #define MENU_UTCOFFSET    2
 #define MENU_SLEEP        3
 #define MENU_SLEEPMODE    4
-#define MENU_OFFTIMER     5
-#define MENU_THEME        6
-#define MENU_UI           7
-#define MENU_ZOOM         8
-#define MENU_SCROLL       9
-#define MENU_RDS          10
-#define MENU_FM_STEREO    11
-#define MENU_FM_REGION    12
-#define MENU_CALIBRATION  13
-#define MENU_DSP_PATCHES  14
-#define MENU_LOADEIBI     15
-#define MENU_UPDATEFW     16
-#define MENU_USBMODE      17
-#define MENU_TCPMODE      18
-#define MENU_BLEMODE      19
-#define MENU_WIFIMODE     20
-#define MENU_ABOUT        21
+#define MENU_STANDBYTIMER 5
+#define MENU_OFFTIMER     6
+#define MENU_THEME        7
+#define MENU_UI           8
+#define MENU_ZOOM         9
+// The encoder entry keeps an even index on purpose: if the wrong decoder is
+// active a 30-detent encoder steps the list by two, and an even index is still
+// reachable so the setting can always be switched back from the device.
+#define MENU_ENCODER      10
+#define MENU_SCROLL       11
+#define MENU_RDS          12
+#define MENU_FM_STEREO    13
+#define MENU_FM_REGION    14
+#define MENU_CALIBRATION  15
+#define MENU_DSP_PATCHES  16
+#define MENU_LOADEIBI     17
+#define MENU_UPDATEFW     18
+#define MENU_USBMODE      19
+#define MENU_TCPMODE      20
+#define MENU_BLEMODE      21
+#define MENU_WIFIMODE     22
+#define MENU_ABOUT        23
 
 
 static uint8_t updateFwIdx = 0;
@@ -155,10 +160,12 @@ static const char *settings[] =
   "UTC 时区",
   "休眠定时",
   "休眠方式",
+  "定时待机",
   "关机定时",
   "主题",
   "界面布局",
   "放大菜单",
+  "编码器",
   "滚动方向",
   "RDS",
   "FM 立体声",
@@ -849,11 +856,21 @@ static void doSleep(int16_t enc)
   prefsRequestSave(SAVE_SETTINGS);
 }
 
+// Both timers display their live countdown, so a turn starts from what the user
+// can see instead of from the original duration.
 static void doOffTimer(int16_t enc)
 {
   if(!enc) return;
-  offTimerMinutes = clamp_range(offTimerMinutes, 5 * enc, 0, 240);
+  offTimerMinutes = clamp_range(offTimerRemainingMinutes(), 5 * enc, 0, 240);
   offTimerRestart();
+  prefsRequestSave(SAVE_SETTINGS);
+}
+
+static void doStandbyTimer(int16_t enc)
+{
+  if(!enc) return;
+  standbyTimerMinutes = clamp_range(standbyTimerRemainingMinutes(), 5 * enc, 0, 240);
+  standbyTimerRestart();
   prefsRequestSave(SAVE_SETTINGS);
 }
 
@@ -922,7 +939,25 @@ static void doZoom(int16_t enc)
 
 static void doScrollDir(int16_t enc)
 {
-  scrollDirection = (scrollDirection == 1) ? -1 : 1;
+  if(!enc) return;
+  // Follow the turn direction instead of toggling: a fast turn reports two
+  // counts at once, and toggling twice would leave the setting unchanged.
+  scrollDirection = enc > 0 ? 1 : -1;
+  prefsRequestSave(SAVE_SETTINGS);
+}
+
+// Two decoder tables cover the common mechanical encoders. Both are tuned so
+// that one mechanical detent produces exactly one step:
+//   half-step -> 30 detents / 15 pulses (stock encoder)
+//   full-step -> 20 detents / 20 pulses (e.g. EC11)
+static void doEncoderMode(int16_t enc)
+{
+  if(!enc) return;
+  // Same reason as doScrollDir(): step one entry towards the turn direction so
+  // a fast turn cannot toggle twice and end up back where it started.
+  int idx = encoderHalfStep ? 1 : 0;
+  idx = wrap_range(idx, (scrollDirection * enc) > 0 ? 1 : -1, 0, 1);
+  setEncoderHalfStep(idx == 1);
   prefsRequestSave(SAVE_SETTINGS);
 }
 
@@ -1240,6 +1275,8 @@ static void clickSettings(int cmd, bool shortPress)
       break;
     case MENU_ZOOM:       currentCmd = CMD_ZOOM;       break;
     case MENU_SCROLL:     currentCmd = CMD_SCROLL;     break;
+    case MENU_ENCODER:    currentCmd = CMD_ENCODER;    break;
+    case MENU_STANDBYTIMER: currentCmd = CMD_STBYTIMER; break;
     case MENU_OFFTIMER:
       if(shortPress) receiverShutdown();
       else currentCmd = CMD_OFFTIMER;
@@ -1297,6 +1334,7 @@ bool doSideBar(uint16_t cmd, int16_t enc, int16_t enca)
     case CMD_RDS:        doRDSMode(scrollDirection * enc);break;
     case CMD_MEMORY:     doMemory(scrollDirection * enca);break;
     case CMD_OFFTIMER:   doOffTimer(enca);break;
+    case CMD_STBYTIMER:  doStandbyTimer(enca);break;
     case CMD_SLEEP:      doSleep(enca);break;
     case CMD_SLEEPMODE:  doSleepMode(scrollDirection * enc);break;
     case CMD_USBMODE:    doUSBMode(scrollDirection * enc);break;
@@ -1305,6 +1343,7 @@ bool doSideBar(uint16_t cmd, int16_t enc, int16_t enca)
     case CMD_WIFIMODE:   doWiFiMode(scrollDirection * enc);break;
     case CMD_ZOOM:       doZoom(enc);break;
     case CMD_SCROLL:     doScrollDir(enc);break;
+    case CMD_ENCODER:    doEncoderMode(enc);break;
     case CMD_UTCOFFSET:  doUTCOffset(scrollDirection * enc);break;
     case CMD_DATETIME:   doDateTime(enc);break;
     case CMD_SQUELCH:    doSquelch(enca);break;
@@ -1335,6 +1374,12 @@ bool clickHandler(uint16_t cmd, bool shortPress)
         prefsRequestSave(SAVE_SETTINGS);
       }
       else currentCmd = CMD_NONE;
+      break;
+    case CMD_STBYTIMER:
+      // Both press lengths just close the sidebar. Clearing the timer here made
+      // a normal exit wipe the countdown by accident; turning it down to zero
+      // is the explicit way to switch it off.
+      currentCmd = CMD_NONE;
       break;
     case CMD_VOLUME:   clickVolume(shortPress);break;
     case CMD_AVC:      clickAvc(shortPress);break;
@@ -2078,7 +2123,23 @@ static void drawOffTimer(int x, int y, int sx)
   drawZoomedMenu(settings[MENU_OFFTIMER]);
   spr.setTextDatum(MC_DATUM);
   spr.setTextColor(TH.menu_param);
-  uint16_t minutes = offTimerMinutes;
+  // Show the live countdown, so the menu reads like a clock instead of a
+  // fixed duration that never seems to move.
+  uint16_t minutes = offTimerRemainingMinutes();
+  char text[16];
+  if(minutes) snprintf(text, sizeof(text), "%u", minutes);
+  else strlcpy(text, "关", sizeof(text));
+  spr.drawString(text, 40+x+(sx/2), 60+y, FONT_LARGE);
+  if(minutes) spr.drawString("分", 40+x+(sx/2), 88+y, FONT_SMALL);
+}
+
+static void drawStandbyTimer(int x, int y, int sx)
+{
+  drawCommon(settings[MENU_STANDBYTIMER], x, y, sx);
+  drawZoomedMenu(settings[MENU_STANDBYTIMER]);
+  spr.setTextDatum(MC_DATUM);
+  spr.setTextColor(TH.menu_param);
+  uint16_t minutes = standbyTimerRemainingMinutes();
   char text[16];
   if(minutes) snprintf(text, sizeof(text), "%u", minutes);
   else strlcpy(text, "关", sizeof(text));
@@ -2122,6 +2183,18 @@ static void drawScrollDir(int x, int y, int sx)
     spr.fillTriangle(39+x+(sx/2)-5, 45+y, 39+x+(sx/2)+5, 45+y, 39+x+(sx/2), 45+y-5, TH.menu_param);
   else
     spr.fillTriangle(39+x+(sx/2)-5, 85+y, 39+x+(sx/2)+5, 85+y, 39+x+(sx/2), 85+y+5, TH.menu_param);
+}
+
+static void drawEncoder(int x, int y, int sx)
+{
+  drawCommon(settings[MENU_ENCODER], x, y, sx);
+  drawZoomedMenu(settings[MENU_ENCODER]);
+
+  spr.setTextDatum(MC_DATUM);
+  spr.setTextColor(TH.menu_param);
+  spr.drawString(encoderHalfStep ? "30定位" : "20定位", 40+x+(sx/2), 58+y, FONT_LARGE);
+  spr.setTextColor(TH.menu_item);
+  spr.drawString(encoderHalfStep ? "15脉冲" : "20脉冲", 40+x+(sx/2), 88+y, FONT_SMALL);
 }
 
 static void drawInfo(int x, int y, int sx)
@@ -2190,13 +2263,16 @@ static void drawInfo(int x, int y, int sx)
     spr.drawString(text, 48+x, 64+y + (1*16), FONT_SMALL);
   }
 
-  // Alternate the Off Timer countdown with the current date and time.
+  // Show the running countdown; with both timers set they take turns.
   const char *clock = clockGet();
-  uint16_t minutes = offTimerRemainingMinutes();
-  if(minutes && (!clock || millis() / BACKGROUND_REFRESH_TIME % 2))
+  uint16_t offMinutes = offTimerRemainingMinutes();
+  uint16_t stbyMinutes = standbyTimerRemainingMinutes();
+  bool showOff = offMinutes && (!stbyMinutes || millis() / BACKGROUND_REFRESH_TIME % 2 == 0);
+  uint16_t countdown = showOff ? offMinutes : stbyMinutes;
+  if(countdown)
   {
-    snprintf(text, sizeof(text), "%02u:%02u", minutes / 60, minutes % 60);
-    spr.drawString("Zzz:", 6+x, 64+y+(2*16), FONT_SMALL);
+    snprintf(text, sizeof(text), "%02u:%02u", countdown / 60, countdown % 60);
+    spr.drawString(showOff ? "Zzz:" : "待机:", 6+x, 64+y+(2*16), FONT_SMALL);
     spr.drawString(text, 48+x, 64+y+(2*16), FONT_SMALL);
   }
   else if(clock)
@@ -2249,6 +2325,7 @@ void drawSideBar(uint16_t cmd, int x, int y, int sx)
     case CMD_RDS:        drawRDSMode(x, y, sx);    break;
     case CMD_MEMORY:     drawMemory(x, y, sx);     break;
     case CMD_OFFTIMER:   drawOffTimer(x, y, sx);   break;
+    case CMD_STBYTIMER:  drawStandbyTimer(x, y, sx);break;
     case CMD_SLEEP:      drawSleep(x, y, sx);      break;
     case CMD_SLEEPMODE:  drawSleepMode(x, y, sx);  break;
     case CMD_USBMODE:    drawUSBMode(x, y, sx);    break;
@@ -2258,6 +2335,7 @@ void drawSideBar(uint16_t cmd, int x, int y, int sx)
     case CMD_UPDATEFW:   drawUpdateFW(x, y, sx);   break;
     case CMD_ZOOM:       drawZoom(x, y, sx);       break;
     case CMD_SCROLL:     drawScrollDir(x, y, sx);  break;
+    case CMD_ENCODER:    drawEncoder(x, y, sx);    break;
     case CMD_UTCOFFSET:  drawUTCOffset(x, y, sx);  break;
     case CMD_DATETIME:   drawDateTime(x, y, sx);   break;
     case CMD_SQUELCH:    drawSquelch(x, y, sx);    break;

@@ -27,6 +27,14 @@ bool sleepOn(int x = 2);
 // True while the SI4732 is powered down by TV style standby: every radio
 // access must be skipped until it has been powered back up.
 bool radioInStandby();
+// True when the display is off in Bluetooth standby, including a standby that
+// was started by the standby timer rather than by the configured sleep mode.
+bool sleepIsBleStandby();
+// True when the display is off but Bluetooth keeps running, so the app can
+// still wake the receiver (Bluetooth standby or CPU sleep).
+bool sleepKeepsBle();
+// Enter Bluetooth standby now, whatever the configured sleep mode is.
+bool standbyEnter();
 bool muteOn(uint8_t mode, int x = 2, bool muteAmp = false);
 void receiverShutdown();
 
@@ -35,6 +43,13 @@ extern uint16_t offTimerMinutes;
 void offTimerRestart();
 uint16_t offTimerRemainingMinutes();
 void offTimerTick();
+
+// Standby timer: same units and limits as the off timer, but it enters
+// Bluetooth standby instead of powering the receiver off.
+extern uint16_t standbyTimerMinutes;
+void standbyTimerRestart();
+uint16_t standbyTimerRemainingMinutes();
+void standbyTimerTick();
 
 // Main task only. Strings are copied; duration 0 keeps the status until replaced or cleared.
 // Pass nullptr for both lines to clear the status.

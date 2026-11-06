@@ -1,0 +1,1 @@
+The off timer now drops Wi-Fi and Bluetooth during its last three minutes, so the unit is already offline when it powers down instead of tearing the links down at the last moment. Moving the deadline out of that window (or switching the timer off) brings both back.
