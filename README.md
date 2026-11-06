@@ -10,6 +10,20 @@
 - 原版说明见 [README.upstream.md](README.upstream.md)
 - 官方文档：<https://esp32-si4732.github.io/ats-mini/>
 
+## 固件下载
+
+编译好的固件在 [Releases](https://github.com/openwrt-1983/ats-mini-cn/releases) 里，不用自己编：
+
+| 文件 | 写入地址 | 用途 |
+|---|---|---|
+| `ats-mini-ospi-*-merged.bin` | `0x0` | 8 MB 整片镜像，推荐，网页整片刷写 |
+| `ats-mini-ospi-*-app.bin` | `0x10000` | 仅应用分区，保留原有设置与电台 |
+
+`*-bootloader.bin`、`*-partitions.bin`、`*-boot_app0.bin` 是分地址烧录用的单个分区文件，
+一般不需要。每个 Release 的说明里都附了对应源码提交号和各文件的 MD5。
+
+仓库本身不提交二进制（`build/` 在 `.gitignore` 里），固件一律走 Release 附件，避免仓库体积膨胀。
+
 ## 相对官方版的主要改动
 
 ### 1. 全界面简体中文
