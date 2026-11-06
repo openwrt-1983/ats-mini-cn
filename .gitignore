@@ -16,3 +16,6 @@ __pycache__/
 
 # Project
 build/
+
+# Font generator source font (download separately, see README)
+tools/NotoSansCJKsc-Light.otf

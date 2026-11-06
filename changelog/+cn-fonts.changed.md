@@ -1,0 +1,1 @@
+Rebuild the Chinese bitmap fonts from real glyph bounding boxes with a shared baseline, so mixed Latin/CJK text lines up on one baseline and the Light strokes stay thin instead of looking bold. CPU sleep now also keeps Bluetooth alive like the BLE standby mode: the app can connect and any command wakes the receiver.
