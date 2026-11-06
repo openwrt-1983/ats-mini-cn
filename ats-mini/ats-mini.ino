@@ -29,7 +29,6 @@
 #define DEFAULT_VOLUME          35  // change it for your favorite sound volume
 #define DEFAULT_SLEEP            0  // Default sleep interval, range = 0 (off) to 255 in steps of 5
 #define RDS_CHECK_TIME         250  // Increased from 90
-#define SEEK_TIMEOUT        600000  // Max seek timeout (ms)
 #define SCHEDULE_CHECK_TIME   2000  // How often to identify the same frequency (ms)
 
 // =================================
@@ -637,6 +636,10 @@ bool processRssiSnr()
   static uint32_t updateCounter = 0;
   bool needRedraw = false;
 
+  // TV style standby keeps the SI4732 powered down, so nothing may talk to
+  // the chip until the receiver has been woken up.
+  if(radioInStandby()) return false;
+
   rx.getCurrentReceivedSignalQuality();
   int newRSSI = rx.getCurrentRSSI();
   int newSNR = rx.getCurrentSNR();
@@ -834,7 +837,7 @@ void loop()
   // Periodically check received RDS information
   if((currentTime - lastRDSCheck) > RDS_CHECK_TIME)
   {
-    needRedraw |= (currentMode == FM) && checkRds();
+    needRedraw |= (currentMode == FM) && !radioInStandby() && checkRds();
     lastRDSCheck = currentTime;
   }
 

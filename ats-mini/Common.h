@@ -61,8 +61,11 @@ static constexpr const lgfx::IFont* FONT_DIGITS  = &lgfx::fonts::Font7;  // 48px
 // Sleep modes
 #define SLEEP_LOCKED    0 // Lock the encoder
 #define SLEEP_UNLOCKED  1 // Do not lock the encoder
-#define SLEEP_LIGHT     2 // ESP32 light sleep
-#define SLEEP_BLE_KEEPALIVE 3 // Screen/audio off, Bluetooth stays connected
+#define SLEEP_LIGHT     2 // Screen off, radio keeps playing, BLE stays up
+#define SLEEP_BLE_KEEPALIVE 3 // TV style standby: screen/audio/receiver off, BLE stays up
+
+// Receiver
+#define SEEK_TIMEOUT   600000  // Max seek timeout (ms)
 
 #if defined(LILYGO_SI473X)
 

@@ -234,6 +234,11 @@ bool patchesTick()
 }
 
 // Only inactive slots can change; selection is blocked during file operations.
+void patchesResetLoaded()
+{
+  loadedSlot = loadedMode = 255;
+}
+
 void loadDSPPatch(uint8_t bandwidth, bool draw)
 {
   if(currentMode == FM)

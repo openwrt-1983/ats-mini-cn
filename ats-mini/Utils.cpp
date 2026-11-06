@@ -8,6 +8,7 @@
 #include "Button.h"
 #include "Utils.h"
 #include "Menu.h"
+#include "Patches.h"
 #include "Draw.h"
 
 #include <sys/time.h>
@@ -20,6 +21,38 @@ static bool sleep_on = false;
 
 // Whether Bluetooth standby applied its own main mute (not the user's mute).
 static bool bleStandbyMuted = false;
+
+// TV style standby powers the SI4732 down. Its tuning state is lost, so the
+// wake path re-runs the cold start sequence and re-applies the current band.
+static bool radioStandbyOn = false;
+
+bool radioInStandby()
+{
+  return radioStandbyOn;
+}
+
+static void radioStandbyEnter()
+{
+  if(radioStandbyOn) return;
+  rx.setAudioMute(true);
+  delay(20);
+  rx.powerDown();
+  radioStandbyOn = true;
+}
+
+static void radioStandbyLeave()
+{
+  if(!radioStandbyOn) return;
+  // Power down wipes the tuning state and any DSP patch: bring the chip back
+  // up like a cold start, then reselect the band so frequency, bandwidth,
+  // AGC/AVC and patch state are all restored.
+  rx.setup(RESET_PIN, MW_BAND_TYPE);
+  patchesResetLoaded();
+  selectBand(bandIdx, false);
+  rx.setVolume(volume);
+  rx.setMaxSeekTime(SEEK_TIMEOUT);
+  radioStandbyOn = false;
+}
 
 // esp_timer includes time spent in light sleep and is independent of the clock.
 uint16_t offTimerMinutes = 0;
@@ -55,7 +88,9 @@ void receiverShutdown()
   netStop();
   bleStop();
   prefsSave();
-  rx.powerDown();
+  // Already powered down by TV style standby: sending POWER_DOWN again is
+  // harmless but pointless, and it would wait for a chip that is asleep.
+  if(!radioInStandby()) rx.powerDown();
   ledcWrite(PIN_LCD_BL, 0);
   tft.sleep();
   delay(120);
@@ -283,12 +318,16 @@ bool sleepOn(int x)
 
     if(sleepModeIdx == SLEEP_BLE_KEEPALIVE)
     {
-      // Bluetooth standby: silence audio and power off the amplifier, but
-      // keep the CPU, radio, and Bluetooth stack running so the app can
-      // reconnect or send a command to wake the receiver.
+      // TV style standby: the panel, the audio path and the receiver are all
+      // shut down; only the BLE radio keeps running so the app can find the
+      // unit and wake it. The station state is restored on wake.
       bleStandbyMuted = !muteOn(MUTE_MAIN);
       if(bleStandbyMuted) muteOn(MUTE_MAIN, true, true);
       if(PIN_AMP_EN >= 0) digitalWrite(PIN_AMP_EN, LOW);
+      netStop();
+      radioStandbyEnter();
+      setCpuFrequencyMhz(80);
+      bleStandbyAdvertising(true);
     }
     else if(sleepModeIdx == SLEEP_LIGHT)
     {
@@ -302,8 +341,11 @@ bool sleepOn(int x)
   else if((x==0) && sleep_on)
   {
     sleep_on = false;
-    // Restore audio before the display comes back up.
-    if(sleepModeIdx == SLEEP_LIGHT) setCpuFrequencyMhz(240);
+    // Bring the CPU and the receiver back before touching audio or display.
+    if(sleepModeIdx == SLEEP_LIGHT || sleepModeIdx == SLEEP_BLE_KEEPALIVE)
+      setCpuFrequencyMhz(240);
+    bleStandbyAdvertising(false);
+    radioStandbyLeave();
     if(bleStandbyMuted)
     {
       // Only undo the mute we applied on entry, so a mute the user set

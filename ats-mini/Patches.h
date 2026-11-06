@@ -16,6 +16,9 @@ void patchesSnapshot(uint8_t &selected, bool &busy);
 uint8_t patchesModes(uint8_t slot);
 // Apply and save a selection on the main task.
 bool patchesSelect(uint8_t slot);
+// Forget which patch the receiver currently holds. Needed after the SI4732 is
+// power cycled, because a power down discards whatever patch was loaded.
+void patchesResetLoaded();
 void loadDSPPatch(uint8_t bandwidth, bool draw = true);
 bool patchesDelete(uint8_t slot, const char *&error);
 bool patchesRequestSelection(uint8_t slot, const char *&error);

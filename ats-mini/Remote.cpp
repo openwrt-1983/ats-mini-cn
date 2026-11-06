@@ -462,6 +462,9 @@ bool serialLoop(uint8_t usbMode)
     serialDisconnectPending = false;
     return false;
   }
+  // TV style standby keeps the SI4732 powered down, so status or tuning
+  // commands over USB would talk to a sleeping chip. Ignore them instead.
+  if(radioInStandby()) return false;
   return remoteLoop(&Serial, &remoteSerialState, serialReadInput);
 }
 

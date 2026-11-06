@@ -20,6 +20,11 @@ public:
   // device is idle and not advertising, so clients can always reconnect.
   void tick();
 
+  // Change the advertising interval (units of 0.625 ms). A longer interval
+  // lowers the radio duty cycle while standby, at the cost of slower
+  // discovery; tick() keeps advertising alive with whatever is set here.
+  void setAdvertisingInterval(uint16_t minUnits, uint16_t maxUnits);
+
 protected:
   virtual void configureDefaults() {}
   virtual void configureSecurity() {}

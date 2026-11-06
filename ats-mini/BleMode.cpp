@@ -156,6 +156,16 @@ bool bleLoop(uint8_t bleMode)
   return false;
 }
 
+//
+// Standby advertising: keep the device discoverable with a much lower radio
+// duty cycle. 800 x 0.625 ms = 500 ms between advertising events while the
+// unit sits in standby, 32/48 (20-30 ms) restored as soon as it wakes up.
+//
+void bleStandbyAdvertising(bool slow)
+{
+  BLESerial.setAdvertisingInterval(slow? 800 : 32, slow? 800 : 48);
+}
+
 bool bleConsumeAbortPending(uint8_t bleMode)
 {
   if (bleMode == BLE_ADHOC)

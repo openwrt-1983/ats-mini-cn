@@ -82,6 +82,25 @@ void BlePeripheral::scheduleAdvertisingRestart(uint32_t delayMs)
     advRestartAtMs = at;
 }
 
+void BlePeripheral::setAdvertisingInterval(uint16_t minUnits, uint16_t maxUnits)
+{
+  if(!started) return;
+
+  BLEServer* currentServer = server();
+  if(currentServer == nullptr) return;
+
+  BLEAdvertising* advertising = currentServer->getAdvertising();
+  if(advertising == nullptr) return;
+
+  // A running advertiser has to be restarted before the new interval applies.
+  // If the restart is rejected, tick() retries with the new interval anyway.
+  bool wasAdvertising = advertising->isAdvertising();
+  if(wasAdvertising) advertising->stop();
+  advertising->setMinInterval(minUnits);
+  advertising->setMaxInterval(maxUnits);
+  if(wasAdvertising) advertising->start();
+}
+
 void BlePeripheral::tick()
 {
   if(!started) return;

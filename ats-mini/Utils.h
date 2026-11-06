@@ -24,6 +24,9 @@ int getStrength(int rssi);
 
 // Set, reset, toggle, or query switches
 bool sleepOn(int x = 2);
+// True while the SI4732 is powered down by TV style standby: every radio
+// access must be skipped until it has been powered back up.
+bool radioInStandby();
 bool muteOn(uint8_t mode, int x = 2, bool muteAmp = false);
 void receiverShutdown();
 
