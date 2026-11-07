@@ -35,6 +35,8 @@ bool sleepIsBleStandby();
 bool sleepKeepsBle();
 // Enter Bluetooth standby now, whatever the configured sleep mode is.
 bool standbyEnter();
+// Wake up and set the sleep mode to CPU sleep (SLEEP_LIGHT).
+bool sleepWakeLight();
 bool muteOn(uint8_t mode, int x = 2, bool muteAmp = false);
 void receiverShutdown();
 

@@ -253,6 +253,26 @@ static void remotePrintStatus(Stream* stream, RemoteState* state)
   // Prepare information ready to be sent
   float remoteVoltage = batteryMonitor();
 
+  // Station name as plain UTF-8: a comma or line ending would break the
+  // comma-separated line, and 0xFF marks the long (EiBi) variant used only on
+  // the receiver's own screen. Truncation stops on a character boundary.
+  const char *station = getStationName();
+  char stationName[MEMORY_NAME_LEN] = {};
+  size_t stationLen = 0;
+  for(size_t i = 0 ; station[i] && stationLen < sizeof(stationName) - 1 ; )
+  {
+    uint8_t c = (uint8_t)station[i];
+    size_t length = c < 0x80? 1 : (c & 0xe0)==0xc0? 2 : (c & 0xf0)==0xe0? 3 : (c & 0xf8)==0xf0? 4 : 1;
+    if(stationLen + length >= sizeof(stationName)) break;
+    if(c == 0xFF) { i++; continue; }
+    for(size_t k=0 ; k<length ; k++)
+    {
+      uint8_t ch = (uint8_t)station[i + k];
+      stationName[stationLen++] = (ch == ',' || ch == '\r' || ch == '\n')? ' ' : (char)ch;
+    }
+    i += length;
+  }
+
   // S-Meter conditional on compile option
   rx.getCurrentReceivedSignalQuality();
   uint8_t remoteRssi = rx.getCurrentRSSI();
@@ -267,7 +287,7 @@ static void remotePrintStatus(Stream* stream, RemoteState* state)
   // receiver is right now, which is what lets the app mirror the real screen
   // instead of inferring the active panel from whichever value changed.
   stream->printf("%u,%u,%d,%d,%s,%s,%s,%s,%hu,%hu,%hu,%hu,%hu,%.2f,%hu"
-                 ",%u,%u,%u,%u,%u,%d,%d,%u,%u,%u,%u,%u,%u,%u\r\n",
+                 ",%u,%u,%u,%u,%u,%d,%d,%u,%u,%u,%u,%u,%u,%u,%s,%u\r\n",
                 VER_APP,
                 getReceiverFrequency(currentFrequency),
                 getCurrentBFO(),
@@ -299,7 +319,13 @@ static void remotePrintStatus(Stream* stream, RemoteState* state)
                             fmStereoIdx != FM_STEREO_MONO &&
                             rx.getCurrentPilot()) ? 1 : 0), // 26: FM stereo pilot
                 remoteOptionIndex(),                    // 27: highlighted option
-                (unsigned)vfoIdx                        // 28: VFO A/B
+                (unsigned)vfoIdx,                       // 28: VFO A/B
+                stationName,                            // 29: station name (UTF-8)
+                (unsigned)currentFrequency              // 30: displayed freq (Hz);
+                                                        //     field 1 is the RECEIVER grid
+                                                        //     frequency, which differs from
+                                                        //     the screen value by the BFO
+                                                        //     offset in SSB.
                 );
 }
 
@@ -334,33 +360,23 @@ static bool remoteExecuteCommand(Stream* stream, RemoteState* state, const Adhoc
     case Id::SleepOn:     sleepOn(true); return true;
     case Id::SleepOff:    sleepOn(false); return true;
     // Force Bluetooth standby: screen, audio and receiver off, BLE radio stays
-    // up so the app can still reach the unit and wake it with 'o'.
+    // up so the app can still reach the unit and wake it with 'y'/'o'.
     //
-    // This is exactly what the receiver does by itself when sleep mode is set
-    // to "BLE standby" (SLEEP_BLE_KEEPALIVE) and the encoder is long pressed,
-    // except that it must not depend on how the unit happens to be configured:
-    // with the shipped default (SLEEP_LOCKED) a plain 'O' only blanks the
-    // panel and the radio keeps playing. So store the mode as well, which also
-    // makes the unit's own long press behave the same way from now on.
+    // One shot on purpose: standbyEnter() raises standbyForced, which is
+    // cleared on wake. It used to also store SLEEP_BLE_KEEPALIVE in the
+    // settings, so a single tap on the app's standby button silently turned
+    // the unit's own sleep mode into "BLE standby" -- afterwards every physical
+    // long press muted the radio and powered the SI4732 down instead of just
+    // blanking the screen. The configured sleep mode is the user's, not the
+    // app's; leave it alone.
     case Id::Standby:
-      if(sleepModeIdx != SLEEP_BLE_KEEPALIVE)
-      {
-        sleepModeIdx = SLEEP_BLE_KEEPALIVE;
-        prefsRequestSave(SAVE_SETTINGS);
-      }
       standbyEnter();
       return true;
     // Wake up, then leave the sleep mode on "CPU sleep" (SLEEP_LIGHT): screen
-    // off, radio keeps playing, BLE stays reachable. Waking first matters —
-    // sleepOn(false) decides what to restore from the *current* mode, so
-    // switching the mode beforehand would skip the receiver bring-up.
+    // off, radio keeps playing, BLE stays reachable. Shared with the physical
+    // long press so the app and the knob always end up in the same mode.
     case Id::WakeLight:
-      sleepOn(false);
-      if(sleepModeIdx != SLEEP_LIGHT)
-      {
-        sleepModeIdx = SLEEP_LIGHT;
-        prefsRequestSave(SAVE_SETTINGS);
-      }
+      sleepWakeLight();
       return true;
     case Id::SetMemory:
       if(!remoteSetMemory(stream, command)) return false;

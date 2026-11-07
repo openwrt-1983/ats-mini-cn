@@ -55,7 +55,7 @@ static bool hasMemoryName(const Memory &memory)
   return(memory.freq && memory.name[strspn(memory.name, " ")]);
 }
 
-bool findMemoryName(uint32_t freq, uint8_t mode, uint8_t band, uint8_t preferred, char (&name)[10])
+bool findMemoryName(uint32_t freq, uint8_t mode, uint8_t band, uint8_t preferred, char (&name)[MEMORY_NAME_LEN])
 {
   MemoryLock lock;
   name[0] = '\0';

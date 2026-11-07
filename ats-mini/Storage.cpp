@@ -124,6 +124,69 @@ bool prefsLoadBand(uint8_t idx, bool openPrefs)
   return(result);
 }
 
+//
+// A memory name is UTF-8 text: printable ASCII or any multi-byte sequence.
+// Control characters and overlong/truncated encodings are rejected so the
+// display never receives a half character.
+//
+static bool isValidName(const char *text, size_t size)
+{
+  size_t i = 0;
+  bool terminated = false;
+
+  while(i < size)
+  {
+    unsigned char c = (unsigned char)text[i];
+    if(!c)
+    {
+      terminated = true;
+      break;
+    }
+
+    if(c < 0x80)
+    {
+      if(c < 0x20 || c == 0x7f) return(false);
+      i++;
+      continue;
+    }
+
+    size_t length;
+    uint32_t code;
+    if((c & 0xe0) == 0xc0)      { length = 2; code = c & 0x1f; }
+    else if((c & 0xf0) == 0xe0) { length = 3; code = c & 0x0f; }
+    else if((c & 0xf8) == 0xf0) { length = 4; code = c & 0x07; }
+    else return(false);
+
+    if(i + length > size) return(false);
+    for(size_t k = 1; k < length; k++)
+    {
+      unsigned char next = (unsigned char)text[i + k];
+      if((next & 0xc0) != 0x80) return(false);
+      code = (code << 6) | (next & 0x3f);
+    }
+
+    // Reject overlong forms, surrogates and out-of-range values.
+    if((length == 2 && code < 0x80) ||
+       (length == 3 && code < 0x800) ||
+       (length == 4 && code < 0x10000) ||
+       (code >= 0xd800 && code <= 0xdfff) || code > 0x10ffff)
+      return(false);
+    i += length;
+  }
+
+  return(terminated);
+}
+
+// Layout used before names could hold Chinese; kept so an existing receiver
+// keeps its 99 slots after the upgrade.
+typedef struct __attribute__((packed))
+{
+  uint32_t freq;
+  uint8_t  band;
+  uint8_t  mode;
+  char     name[10];
+} LegacyMemory;
+
 void prefsSaveMemory(uint8_t idx, bool openPrefs)
 {
   char name[32];
@@ -156,20 +219,25 @@ bool prefsLoadMemory(uint8_t idx, bool openPrefs)
   Memory memory = {};
   bool result = !!prefs.getBytes(name, &memory, sizeof(memory));
 
+  if(!result && prefs.getBytesLength(name)==sizeof(LegacyMemory))
+  {
+    // Slot written by a firmware that only stored ASCII names.
+    LegacyMemory legacy = {};
+    if(prefs.getBytes(name, &legacy, sizeof(legacy))==sizeof(legacy))
+    {
+      memory.freq = legacy.freq;
+      memory.band = legacy.band;
+      memory.mode = legacy.mode;
+      memcpy(memory.name, legacy.name, sizeof(legacy.name));
+      memory.name[sizeof(legacy.name)] = '\0';
+      result = true;
+    }
+  }
+
   if(result)
   {
-    bool validName = false;
-    for(size_t i=0 ; i<sizeof(memory.name) ; i++)
-    {
-      unsigned char c = memory.name[i];
-      if(!c)
-      {
-        validName = true;
-        break;
-      }
-      if(c<0x20 || c>0x7e) break;
-    }
-    if(!validName) memset(memory.name, 0, sizeof(memory.name));
+    if(!isValidName(memory.name, sizeof(memory.name)))
+      memset(memory.name, 0, sizeof(memory.name));
     setMemory(idx, memory);
   }
 

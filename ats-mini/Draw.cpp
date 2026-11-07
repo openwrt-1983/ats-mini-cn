@@ -372,9 +372,32 @@ void drawStereoIndicator(int x, int y, bool stereo)
 //
 void drawStationName(const char *name, int x, int y)
 {
-  spr.setTextDatum(TC_DATUM);
+  // The name panel spans x-72 .. x+80 (152 px). The name is always drawn in the
+  // small font and left aligned so a long Chinese name reads naturally and does
+  // not jump around as its width changes. Anything that still overflows is cut
+  // on a character boundary and marked with an ellipsis.
+  const int left  = x - 72 + 6;
+  const int width = 152 - 12;
+
+  char text[MEMORY_NAME_LEN + 8];
+  snprintf(text, sizeof(text), "%s", name);
+
+  if(spr.textWidth(text, FONT_SMALL) > width)
+  {
+    size_t cut = strlen(text);
+    while(cut && spr.textWidth(text, FONT_SMALL) > width)
+    {
+      // Step back one whole UTF-8 character.
+      do cut--; while(cut && ((uint8_t)text[cut] & 0xc0) == 0x80);
+      text[cut] = '\0';
+    }
+    if(cut + 4 <= sizeof(text)) strcpy(text + cut, "…");
+  }
+
+  // 16 px text centred inside the 26 px tall panel.
+  spr.setTextDatum(TL_DATUM);
   spr.setTextColor(TH.rds_text);
-  spr.drawString(name, x, y, FONT_LARGE);
+  spr.drawString(text, left, y + 3, FONT_SMALL);
 }
 
 //

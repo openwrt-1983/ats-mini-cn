@@ -4,6 +4,12 @@
 #include "ParserTypes.h"
 #include "Themes.h"
 
+// Memory names are UTF-8. Must match MEMORY_NAME_LEN in Common.h, which cannot
+// be included here without pulling the display stack into the parser tests.
+#ifndef MEMORY_NAME_LEN
+#define MEMORY_NAME_LEN 25
+#endif
+
 struct AdhocCommand {
   enum class Id : uint8_t {
     Unknown = 0,
@@ -54,7 +60,7 @@ struct AdhocCommand {
   uint32_t frequency;
   char mode[MODE_LEN];
   bool has_name;
-  char name[10]; // Omitted preserves the name; present but empty clears it.
+  char name[MEMORY_NAME_LEN]; // Omitted preserves the name; present but empty clears it. UTF-8.
   uint16_t theme_words[THEME_WORDS];
 };
 

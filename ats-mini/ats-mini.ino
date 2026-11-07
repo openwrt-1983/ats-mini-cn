@@ -782,11 +782,14 @@ void loop()
   int16_t encCountAccel = (int16_t)(encCounts >> 16);
   ButtonTracker::State button = pb1.update(digitalRead(ENCODER_PUSH_BUTTON) == LOW);
 
-  // Only a sleep mode that keeps Bluetooth running can be woken by the
-  // encoder. Use sleepKeepsBle() rather than the configured mode alone: the
-  // standby timer can force Bluetooth standby while "lock" is configured, and
-  // dropping the counts there would leave the encoder unable to wake the unit.
-  if(encCount && sleepOn() && !sleepKeepsBle())
+  // Physical input must not wake the receiver any more. A brush against the
+  // knob -- or a press against something inside a bag -- used to power the
+  // radio back on and start playing. Only a 2 s hold (the isLongPressed branch
+  // below) wakes it now. The app and the serial terminal keep their own
+  // explicit wake commands, and the app never sends a click while asleep.
+  // Counts are dropped in every sleep mode, not just the BLE-keeping ones, so
+  // "lock", "CPU sleep" and "standby" all behave the same way from the knob.
+  if(encCount && sleepOn())
     encCount = encCountAccel = 0;
   // Keep gesture ownership separate: releasing one control must not clear
   // a held gesture on the other, or affect physical long-press handling.
@@ -798,11 +801,32 @@ void loop()
     needRedraw |= handleRotation(encCount, encCountAccel, button.isPressed);
   else if(!physicalPushAndRotate && button.isLongPressed)
   {
-    sleepOn(!sleepOn());
+    // Wake up. If the configured sleep mode is "BLE standby", waking also
+    // drops it back to CPU sleep: that mode is entered once on purpose, but
+    // leaving it stored meant every later long press muted the radio and
+    // powered the SI4732 down -- the user expects a long press to only blank
+    // the screen. CPU sleep is exactly that: display off, radio still playing,
+    // Bluetooth still reachable. A standby forced by the app or the timer is
+    // one shot already (standbyForced), so it must not touch the setting.
+    if(sleepOn())
+    {
+      if(sleepModeIdx == SLEEP_BLE_KEEPALIVE) sleepWakeLight();
+      else sleepOn(false);
+    }
+    else sleepOn(true);
     elapsedSleep = elapsedCommand = millis();
   }
   else if(!physicalPushAndRotate && (button.wasClicked || button.wasShortPressed))
-    needRedraw |= handleClick(button.wasShortPressed);
+  {
+    // A short press must not wake a sleeping receiver: that is what the 2 s
+    // hold above is for. It used to wake on any click in BLE standby / CPU
+    // sleep (handleClick's sleepKeepsBle branch), which turned accidental
+    // touches into "the radio switched itself on". Bluetooth standby and CPU
+    // sleep are filtered here; "unlocked" sleep keeps its short-press volume
+    // adjustment, because there the radio is already playing.
+    if(!(sleepOn() && sleepKeepsBle()))
+      needRedraw |= handleClick(button.wasShortPressed);
+  }
 
   // Each source executes independently, so simultaneous inputs are not lost.
   needRedraw |= serialLoop(usbModeIdx);

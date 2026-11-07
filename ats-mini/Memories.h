@@ -11,7 +11,7 @@ int getTotalMemories();
 Memory getMemory(uint8_t slot);
 void setMemory(uint8_t slot, const Memory &memory);
 void setMemories(const Memory *replacement);
-bool findMemoryName(uint32_t freq, uint8_t mode, uint8_t band, uint8_t preferred, char (&name)[10]);
+bool findMemoryName(uint32_t freq, uint8_t mode, uint8_t band, uint8_t preferred, char (&name)[MEMORY_NAME_LEN]);
 bool isMemoryInBand(const Band *band, const Memory *memory);
 
 #endif // MEMORIES_H

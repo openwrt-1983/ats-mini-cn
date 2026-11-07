@@ -2,34 +2,159 @@
 #include "Themes.h"
 #include "Utils.h"
 
-#define VBAT_MON  4                 // GPIO04 -- Battery Monitor PIN
+#define VBAT_MON  4                 // GPIO04 -- Battery Monitor PIN (ADC1 channel 3)
 
-#define BATT_ADC_READS          10  // ADC reads for average calculation (Maximum value = 16 to avoid rollover in average calculation)
-#define BATT_ADC_FACTOR      1.702  // ADC correction factor used for the battery monitor
+//
+// Hardware, see docs/source/hardware.md and the schematics:
+//
+//   VBAT --- R8 (100k) ---+--- BAT_ADC (GPIO4)
+//                         |
+//                      R10 (100k)
+//                         |
+//                        GND          C12 (10nF) from BAT_ADC to GND
+//
+// So the pin sees VBAT / 2 and the firmware has to multiply back by (R8+R10)/R10.
+//
+#define BATT_DIVIDER         2.0f   // (R8 + R10) / R10
+#define BATT_ADC_READS         12   // Samples per measurement (must be <= 32)
+#define BATT_ADC_WARMUP         2   // First samples after the channel switch are junk
+#define BATT_ADC_TRIMMED        2   // Drop this many lowest and highest samples
+// Sampling blocks the main loop, which also polls the rotary encoder, so the
+// whole burst is kept below ~1.5 ms. The divider is only 50k into 10nF
+// (tau = 0.5 ms) and the cell voltage drifts far slower than that, so a long
+// settle time buys nothing here.
+#define BATT_ADC_SPACING_US   120
+#define BATT_FILTER_ALPHA    0.30f  // IIR weight of a new measurement (0..1)
+#define BATT_SAMPLE_INTERVAL  500   // ms between real measurements
+#define BATT_DISPLAY_HYST    0.01f  // Volts; keeps the last digit from flickering
+
 #define BATT_SOC_LEVEL1      3.680  // Battery SOC voltage for 25%
 #define BATT_SOC_LEVEL2      3.780  // Battery SOC voltage for 50%
 #define BATT_SOC_LEVEL3      3.880  // Battery SOC voltage for 75%
 #define BATT_SOC_HYST_2      0.020  // Battery SOC hyteresis voltage divided by 2
 
+// A single 18650 never reads outside this window. Anything else means the ADC
+// is not connected/not settled yet, so the reading is dropped instead of
+// being displayed as a plausible but wrong voltage.
+#define BATT_VALID_MIN       2.000f
+#define BATT_VALID_MAX       5.200f
+
+// USB present: VBUS minus the diode drop in the load sharing circuit.
+#define BATT_USB_THRESHOLD   4.300f
+
 // State machine used for battery state of charge (SOC) detection with
 // hysteresis (Default = Illegal state)
 static uint8_t batteryState = 255;
 
-// Current battery voltage
+// Current battery voltage (filtered)
 static float batteryVolts = 4.0;
+
+// Last value handed to the display, with hysteresis applied
+static float batteryShown = 0.0;
+
+// Measurement state
+static bool     batteryReady = false;
+static uint32_t batteryLastMs = 0;
+
+//
+// Map a voltage to a SOC bucket. Used to seed the state machine so that the
+// very first screen after power on already shows the right number of bars
+// instead of starting in the "0 to 25%" bucket.
+//
+static uint8_t batteryBucket(float volts)
+{
+  if(volts > BATT_SOC_LEVEL3) return 3;
+  if(volts > BATT_SOC_LEVEL2) return 2;
+  if(volts > BATT_SOC_LEVEL1) return 1;
+  return 0;
+}
+
+//
+// One calibrated measurement: average of the middle samples, outliers dropped.
+//
+static float batteryReadOnce()
+{
+  uint32_t mv[BATT_ADC_READS];
+  uint8_t  i, j, n = 0;
+
+  // analogReadMilliVolts() runs the value through the per-chip ADC
+  // calibration burnt into eFuse, which is what makes the absolute voltage
+  // trustworthy. analogRead() returns raw counts that drift with chip and
+  // temperature, which is why the old code needed a magic 1.702 factor.
+  for(i = 0; i < BATT_ADC_READS; i++)
+  {
+    uint32_t sample = analogReadMilliVolts(VBAT_MON);
+
+    // Burn the first few conversions: the sample-and-hold capacitor and C12
+    // still carry charge from the previous channel when the pin is switched.
+    if(i >= BATT_ADC_WARMUP) mv[n++] = sample;
+
+    delayMicroseconds(BATT_ADC_SPACING_US);
+  }
+
+  if(n < (2 * BATT_ADC_TRIMMED + 1)) return batteryVolts;
+
+  // Insertion sort, the array holds 14 entries at most
+  for(i = 1; i < n; i++)
+  {
+    uint32_t key = mv[i];
+    for(j = i; j > 0 && mv[j - 1] > key; j--) mv[j] = mv[j - 1];
+    mv[j] = key;
+  }
+
+  // Mean of the middle samples: kills the switching regulator spikes from
+  // the LCD backlight and the audio amplifier without slowing the response.
+  uint32_t sum = 0;
+  uint8_t  lo = BATT_ADC_TRIMMED, hi = n - BATT_ADC_TRIMMED;
+  for(i = lo; i < hi; i++) sum += mv[i];
+
+  return ((float)sum / (float)(hi - lo)) * BATT_DIVIDER / 1000.0f;
+}
 
 //
 // Measure and return battery voltage
 //
 float batteryMonitor()
 {
-  int i, j;
+  static bool adcConfigured = false;
 
-  // Read ADC multiple times
-  for(i=j=0 ; i<BATT_ADC_READS ; i++) j += analogRead(VBAT_MON);
+  if(!adcConfigured)
+  {
+    // 12 bits is the default, but ask explicitly: the calibration table used
+    // by analogReadMilliVolts() depends on resolution and attenuation.
+    analogReadResolution(12);
+    // 11 dB attenuation is required here: the divider halves the cell, but
+    // 4.2 V still arrives as 2.1 V, above the 0 dB / 2.5 dB ranges.
+    analogSetPinAttenuation(VBAT_MON, ADC_11db);
+    adcConfigured = true;
+  }
 
-  // Calculate average voltage with correction factor
-  batteryVolts = ((float)j / BATT_ADC_READS) * BATT_ADC_FACTOR / 1000;
+  uint32_t now = millis();
+
+  // Both the status stream (every 200 ms) and the layout (every redraw) ask
+  // for the voltage. Sample once per interval and hand out the cached value
+  // in between, so the display does not jitter with every frame.
+  if(batteryReady && (uint32_t)(now - batteryLastMs) < BATT_SAMPLE_INTERVAL)
+    return batteryVolts;
+
+  batteryLastMs = now;
+
+  float raw = batteryReadOnce();
+
+  // Reject impossible readings, keep the previous value
+  if(raw < BATT_VALID_MIN || raw > BATT_VALID_MAX) return batteryVolts;
+
+  if(!batteryReady)
+  {
+    batteryVolts = raw;
+    batteryReady = true;
+  }
+  else
+  {
+    // Exponential filter: responds in about three measurements (~1.5 s)
+    // but a single noisy conversion cannot move the bars.
+    batteryVolts += (raw - batteryVolts) * BATT_FILTER_ALPHA;
+  }
 
   // State machine
   // SOC (%)      batteryState
@@ -54,7 +179,8 @@ float batteryMonitor()
       if      (batteryVolts < (BATT_SOC_LEVEL3 - BATT_SOC_HYST_2)) batteryState = 2;   // State 3 > 2
       break;
     default:
-      if      (batteryState > 3) batteryState = 0;                                // State (Illegal) > 0
+      // First measurement after power on: start where the voltage says we are
+      batteryState = batteryBucket(batteryVolts);
       break;
   }
 
@@ -91,8 +217,11 @@ bool drawBattery(int x, int y)
   // The hardware has a load sharing circuit to allow simultaneous charge and power
   // With USB(5V) connected the voltage reading will be approx. VBUS - Diode Drop = 4.65V
   // If the average voltage is greater than 4.3V, show ligtning on the display
-  if(batteryVolts > 4.3)
+  if(batteryVolts > BATT_USB_THRESHOLD)
   {
+    // Charging: the cell is being topped up, so it is by definition full enough
+    batteryState = 3;
+
     spr.fillRoundRect(x + 2, y + 3, 24, 10, 2, TH.batt_charge);
     spr.drawLine(x + 9 + 8, y + 1, x + 9 + 6, y + 1 + 5, TH.bg);
     spr.drawLine(x + 9 + 6, y + 1 + 5, x + 9 + 10, y + 1 + 5, TH.bg);
@@ -112,8 +241,14 @@ bool drawBattery(int x, int y)
     uint16_t color;
     int level;
 
+    // Keep the last digit stable: only move the shown value when the filtered
+    // voltage really moved by 10 mV, otherwise "4.06V" flickers to "4.05V"
+    // and back on every redraw.
+    if(batteryShown <= 0.0f || fabsf(batteryVolts - batteryShown) >= BATT_DISPLAY_HYST)
+      batteryShown = batteryVolts;
+
     // Text representation of the voltage
-    sprintf(voltage, "%.02fV", batteryVolts);
+    sprintf(voltage, "%.02fV", batteryShown);
 
     // Battery bar color and width
     switch(batteryState)

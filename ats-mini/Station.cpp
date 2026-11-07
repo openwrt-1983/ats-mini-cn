@@ -76,10 +76,10 @@ const char *getStationName()
     return("*STATION*");
 
   const char *station = currentMode!=FM || (getRDSMode() & RDS_PS)? bufStationName : "";
-  // Live FM identification takes precedence over a saved name.
-  if(currentMode==FM && station[strspn(station, " ")]) return(station);
 
-  static char memoryName[10];
+  // FM: a saved memory name wins over the 8-character ASCII RDS name, because
+  // only the memory slot can hold the Chinese station name the listener typed.
+  static char memoryName[MEMORY_NAME_LEN];
   if(findMemoryName(currentFrequency, currentMode, bandIdx, memoryIdx, memoryName))
     return(memoryName);
 

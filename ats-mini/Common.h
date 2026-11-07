@@ -162,12 +162,16 @@ typedef struct
   int16_t lsbCal;         // LSB calibration value
 } Band;
 
+// Memory names are UTF-8 so Chinese station names fit. 25 bytes hold either
+// 8 CJK characters (3 bytes each) or 24 ASCII ones, plus the terminator.
+#define MEMORY_NAME_LEN 25
+
 typedef struct __attribute__((packed))
 {
   uint32_t freq;          // Frequency (Hz)
   uint8_t  band;          // Band
   uint8_t  mode;          // Modulation
-  char     name[10];      // Name
+  char     name[MEMORY_NAME_LEN]; // Name (UTF-8)
 } Memory;
 
 typedef struct

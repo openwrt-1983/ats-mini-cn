@@ -11,6 +11,8 @@
 #include "BleMode.h"
 #include "Ota.h"
 #include "Patches.h"
+#include "Backup.h"
+#include "StationNames.h"
 #include "PageTemplate.h"
 #include "PageCommon.h"
 #include "PageStatus.h"
@@ -41,6 +43,10 @@ static void webSetWiFi(AsyncWebServerRequest *request);
 static void webSetMemories(AsyncWebServerRequest *request);
 static void webUploadSplash(AsyncWebServerRequest *request, const String &filename,
                             size_t index, uint8_t *data, size_t len, bool final);
+static void webBackupDownload(AsyncWebServerRequest *request);
+static void webUploadBackup(AsyncWebServerRequest *request, const String &filename,
+                            size_t index, uint8_t *data, size_t len, bool final);
+static void webRestoreComplete(AsyncWebServerRequest *request);
 static bool webIsAuthenticated(AsyncWebServerRequest *request);
 static void webUploadFirmwareComplete(AsyncWebServerRequest *request);
 static void webUpdatePage(AsyncWebServerRequest *request, const OtaStatus &status = otaStatus(), int code = 0);
@@ -78,6 +84,13 @@ struct SplashUploadState
 {
   bool incomplete;
   bool tooLarge;
+};
+
+struct BackupUploadState
+{
+  bool incomplete;
+  bool tooLarge;
+  bool failed;
 };
 
 static bool webIsAuthenticated(AsyncWebServerRequest *request)
@@ -153,6 +166,8 @@ void webScreenshotTick()
 bool webTick()
 {
   otaTick();
+  // NVS is written from this task only; a restore may also schedule a restart.
+  backupTick();
   bool redraw = patchesTick();
   std::unique_lock<std::mutex> lock(configSettings.mutex);
   if(configSettings.pending)
@@ -271,6 +286,11 @@ void webInit()
   // This method saves configuration form contents
   server.on("/setconfig", HTTP_POST, webSetConfig, webUploadSplash);
 
+  // Configuration backup: download the whole setup as text, upload it back
+  // after a reflash so nothing has to be dialled in again.
+  server.on("/backup.txt", HTTP_GET, webBackupDownload);
+  server.on("/restore", HTTP_POST, webRestoreComplete, webUploadBackup);
+
   // Register subpaths first: the server also matches /update to /update/... .
   server.on("/update/upload", HTTP_POST, webUploadFirmwareComplete, webUploadFirmware);
   server.on("/update", HTTP_GET, [](AsyncWebServerRequest *request) {
@@ -378,6 +398,129 @@ static void webUploadSplash(AsyncWebServerRequest *request, const String &filena
 
   if(final && state)
     state->incomplete = false;
+}
+
+//
+// Configuration backup: everything the receiver persists, as a text file.
+//
+
+static void webBackupDownload(AsyncWebServerRequest *request)
+{
+  if(!webIsAuthenticated(request)) return request->requestAuthentication();
+
+  const String body = backupBuild();
+  AsyncWebServerResponse *response = request->beginResponse(200, "text/plain; charset=utf-8", body);
+  if(!response) return request->send(503, "text/plain", "无法生成配置文件。");
+
+  // Suffix with the tail of the MAC so backups from two receivers on the same
+  // computer do not overwrite each other in the downloads folder.
+  String name = getMACAddress();
+  name.replace(":", "");
+  if(name.length() > 4) name = name.substring(name.length() - 4);
+  String filename = "ats-mini-config-" + name + ".txt";
+
+  response->addHeader("Content-Disposition", String("attachment; filename=\"") + filename + "\"");
+  response->addHeader("Cache-Control", "no-store");
+  response->addHeader("Connection", "close");
+  request->send(response);
+}
+
+static void webUploadBackup(AsyncWebServerRequest *request, const String &,
+                            size_t index, uint8_t *data, size_t len, bool final)
+{
+  if(!webIsAuthenticated(request) || request->getResponse()) return;
+
+  if(index == 0)
+  {
+    LittleFS.remove(BACKUP_TMP_PATH);
+
+    BackupUploadState *state = new(std::nothrow) BackupUploadState();
+    if(!state) return;
+    request->_tempObject = state;
+    request->onDisconnect([request, state]() {
+      if(state->incomplete) request->_tempFile.close();
+      // Removed again on purpose: the main task deletes it right after a
+      // successful parse, so this only cleans up failed or abandoned uploads.
+      LittleFS.remove(BACKUP_TMP_PATH);
+      request->_tempObject = nullptr;
+      delete state;
+    });
+
+    request->_tempFile = LittleFS.open(BACKUP_TMP_PATH, "w");
+    state->incomplete = !!request->_tempFile;
+    if(!state->incomplete) state->failed = true;
+  }
+
+  BackupUploadState *state = static_cast<BackupUploadState *>(request->_tempObject);
+  if(!state) return;
+
+  if(request->_tempFile && len)
+  {
+    if((index + len) > BACKUP_MAX_BYTES)
+    {
+      state->tooLarge = true;
+      state->incomplete = false;
+      request->_tempFile.close();
+      LittleFS.remove(BACKUP_TMP_PATH);
+    }
+    else if(request->_tempFile.write(data, len) != len)
+    {
+      state->failed = true;
+      state->incomplete = false;
+      request->_tempFile.close();
+      LittleFS.remove(BACKUP_TMP_PATH);
+    }
+  }
+
+  if(final && request->_tempFile) request->_tempFile.close();
+  if(final) state->incomplete = false;
+}
+
+static void webRestoreComplete(AsyncWebServerRequest *request)
+{
+  if(!webIsAuthenticated(request)) return request->requestAuthentication();
+  if(request->getResponse()) return;
+
+  BackupUploadState *state = static_cast<BackupUploadState *>(request->_tempObject);
+  const char *error = nullptr;
+  if(state && state->tooLarge) error = "文件超过 64 KB，不像是配置文件。";
+  else if(state && state->failed) error = "无法写入临时文件，请重试。";
+  else if(!backupRequestRestore()) error = "已经有一个导入正在进行，请等待设备重启。";
+
+  if(!error)
+  {
+    // The main task owns NVS writes. Wait for it here so the upload context
+    // (and its cleanup) cannot delete the file before it has been parsed.
+    uint32_t started = millis();
+    while(backupRestorePending() && (uint32_t)(millis() - started) < 3000) delay(10);
+    if(backupRestorePending()) error = "设备忙，导入未开始，请重试。";
+    else if(!backupRestoreDone()) error = backupRestoreError();
+  }
+
+  String message;
+  int code = 200;
+  if(error)
+  {
+    message = error;
+    code = 400;
+  }
+  else
+  {
+    message = "已导入 " + String(backupRestoreApplied()) + " 项设置";
+    if(backupRestoreSkipped())
+      message += "，跳过 " + String(backupRestoreSkipped()) + " 行无法识别的内容";
+    message += "。设备将在几秒内自动重启，重启后按新的设置工作。";
+  }
+
+  const String page = webPage(pageRestore, pageRestoreTitle, {
+    {"title", pageRestoreTitle}, {"message", message}
+  }, {
+    {"navigation", [](String &out) { webNavigation(out, "/config"); }}
+  });
+  AsyncWebServerResponse *response = request->beginResponse(code, "text/html", page);
+  response->addHeader("Cache-Control", "no-store");
+  response->addHeader("Connection", "close");
+  request->send(response);
 }
 
 static bool webConfigNumber(AsyncWebServerRequest *request, const char *name, int &value,
@@ -650,6 +793,34 @@ static const String webRadioPage()
   });
 }
 
+// A memory name is UTF-8: printable ASCII or well-formed multi-byte
+// sequences, at most MEMORY_NAME_LEN - 1 bytes.
+static bool webNameValid(const String &text)
+{
+  if(text.length() >= MEMORY_NAME_LEN) return false;
+
+  size_t i = 0;
+  while(i < text.length())
+  {
+    uint8_t c = (uint8_t)text[i];
+    if(c < 0x80)
+    {
+      if(c < 0x20 || c == 0x7f) return false;
+      i++;
+      continue;
+    }
+
+    size_t length = (c & 0xe0)==0xc0? 2 : (c & 0xf0)==0xe0? 3 : (c & 0xf8)==0xf0? 4 : 0;
+    if(!length) return false;
+    if(i + length > text.length()) return false;
+    for(size_t k=1 ; k<length ; k++)
+      if(((uint8_t)text[i + k] & 0xc0)!=0x80) return false;
+    i += length;
+  }
+
+  return true;
+}
+
 static void webSetMemories(AsyncWebServerRequest *request)
 {
   if(!webIsAuthenticated(request)) return request->requestAuthentication();
@@ -674,10 +845,7 @@ static void webSetMemories(AsyncWebServerRequest *request)
 
     Memory &mem = pending[slot];
     const String &label = name->value();
-    if(label.length() >= sizeof(mem.name)) error = "Names must be at most 9 characters.";
-    for(size_t i=0 ; !error && i<label.length() ; i++)
-      if((uint8_t)label[i]<0x20 || (uint8_t)label[i]>0x7e)
-        error = "Names must contain printable ASCII characters.";
+    if(!webNameValid(label)) error = "Names must be UTF-8 text of at most 8 Chinese (or 24 ASCII) characters.";
     if(error) break;
     memcpy(mem.name, label.c_str(), label.length());
 
@@ -747,6 +915,16 @@ static const String webMemoryPage()
     {"title", pageMemoryTitle}, {"toolbar", pageMemoryToolbar}
   }, {
     {"navigation", [](String &out) { webNavigation(out, "/memory"); }},
+    {"presets", [](String &out) {
+      out += F("<DATALIST ID=\"station-names\">");
+      for(int i=0 ; i<stationNamePresetCount ; i++)
+      {
+        out += F("<OPTION VALUE=\"");
+        out += stationNamePresets[i];
+        out += F("\">");
+      }
+      out += F("</DATALIST>");
+    }},
     {"rows", [](String &out) {
       for(int j=0 ; j<MEMORY_COUNT ; j++)
       {

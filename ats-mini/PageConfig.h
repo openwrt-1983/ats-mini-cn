@@ -59,6 +59,26 @@ function browserDateTime(submit) {
   dateTime.disabled = utcOffset.disabled = enabled && !submit;
 }
 </SCRIPT>
+<H1>配置备份</H1>
+<P>把收音机当前的全部设置导出成一个文本文件：音量、亮度、主题、波段、SSB 校准、VFO、全部电台记忆、Wi-Fi 与 Web 登录。重刷固件会擦掉这些数据，刷完后在这里上传该文件即可原样恢复，不用再逐项设置。</P>
+<TABLE COLUMNS="2">
+  <TR><TD CLASS="LABEL">导出</TD><TD><A HREF="/backup.txt">下载配置文件</A><BR><SMALL>纯文本，可直接用记事本打开修改；文件内含 Wi-Fi 与 Web 登录密码，请勿外传</SMALL></TD></TR>
+</TABLE>
+<FORM ACTION="/restore" METHOD="POST" ENCTYPE="multipart/form-data">
+  <TABLE COLUMNS="2">
+    <TR><TD CLASS="LABEL">导入</TD><TD><INPUT TYPE="FILE" NAME="backup" ACCEPT=".txt,.conf,text/plain" REQUIRED><BR><SMALL>上传后设备会写入配置并自动重启；设置项按 key 覆盖，文件里没有的项目保持当前值</SMALL></TD></TR>
+    <TR><TH COLSPAN="2"><INPUT TYPE="SUBMIT" VALUE="导入并重启"></TH></TR>
+  </TABLE>
+</FORM>
+<P><SMALL>开机画面（Splash）由 <A HREF="/splash.png">这里</A> 单独下载，重刷后到上面的表单里重新上传。</SMALL></P>
+)HTML";
+
+static const char pageRestoreTitle[] PROGMEM = "导入配置";
+
+static const char pageRestore[] PROGMEM = R"HTML(<H1>{{title}}</H1>
+{{{navigation}}}
+<P>{{message}}</P>
+<P><A HREF="/config">返回设置</A></P>
 )HTML";
 
 static const char pageSplash[] PROGMEM = R"HTML(<IMG SRC="/splash.png?{{version}}" ALT="当前开机画面" STYLE="max-width:100%;height:auto;">)HTML";

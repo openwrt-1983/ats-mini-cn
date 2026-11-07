@@ -26,8 +26,8 @@ static const char pageMemory[] PROGMEM = R"HTML(<STYLE>
 </STYLE>
 <H1>{{title}}</H1>
 {{{navigation}}}
-<P CLASS="MEMORY-HELP">以 Hz 为单位编辑频率（0 表示清空该槽位）。名称最多 9 个可打印 ASCII 字符。
-使用上/下按钮调整槽位顺序，按“保存”应用修改。</P>
+<P CLASS="MEMORY-HELP">以 Hz 为单位编辑频率（0 表示清空该槽位）。名称支持中文，最多 8 个汉字（或 24 个英文字符），
+可以从输入框的下拉候选里直接选台名。使用上/下按钮调整槽位顺序，按“保存”应用修改。</P>
 <FORM ID="memories" METHOD="post" ACTION="/memory" AUTOCOMPLETE="on" ONINPUT="changed()">
   {{{toolbar}}}
   <P ID="memory-status" ROLE="status"></P>
@@ -39,6 +39,7 @@ static const char pageMemory[] PROGMEM = R"HTML(<STYLE>
     </TR></THEAD>
     <TBODY>{{{rows}}}</TBODY>
   </TABLE>
+  {{{presets}}}
   {{{toolbar}}}
 </FORM>
 <SCRIPT>
@@ -51,6 +52,9 @@ const rows = Array.from(body.rows);
 const cell = (row, field) => row.querySelector('[data-field="' + field + '"]');
 const bandNames = Array.from(cell(rows[0], 'band').options, option => option.value);
 const modeNames = Array.from(cell(rows[0], 'mode').options, option => option.value);
+// 名称以 UTF-8 存储，固件最多收 24 字节：8 个汉字或 24 个英文。
+const nameOk = value => typeof value === 'string' &&
+  !/[\u0000-\u001f\u007f]/.test(value) && new TextEncoder().encode(value).length <= 24;
 const read = () => rows.map(row => Object.fromEntries(fields.map(field =>
   [field, field === 'freq' ? Number(cell(row, field).value) : cell(row, field).value])));
 
@@ -66,7 +70,7 @@ function validateImport(data) {
     const name = m?.name === undefined ? '' : m.name;
     if(!m || !bandNames.includes(m.band) ||
        !modeNames.includes(m.mode) ||
-       typeof name !== 'string' || !/^[\x20-\x7e]{0,9}$/.test(name) ||
+       !nameOk(name) ||
        !Number.isInteger(m.freq) || m.freq < 0 || m.freq > 4294967295)
       throw Error('槽位 ' + (i + 1) + '：记忆数据无效。');
     return {band: m.band, freq: m.freq, mode: m.mode, name};
@@ -123,7 +127,7 @@ static const char pageMemoryToolbar[] PROGMEM = R"HTML(<DIV CLASS="MEMORY-NAV">
 
 static const char pageMemoryRow[] PROGMEM = R"HTML(<TR>
   <TH SCOPE="row">{{slot}}</TH>
-  <TD><INPUT DATA-FIELD="name" NAME="name{{index}}" VALUE="{{name}}" ARIA-LABEL="名称" SIZE="9" MAXLENGTH="9" PATTERN="[ -~]{0,9}"></TD>
+  <TD><INPUT DATA-FIELD="name" NAME="name{{index}}" VALUE="{{name}}" ARIA-LABEL="名称" SIZE="12" MAXLENGTH="24" LIST="station-names"></TD>
   <TD><SELECT DATA-FIELD="band" NAME="band{{index}}" ARIA-LABEL="波段"><OPTION VALUE=""></OPTION>{{{bands}}}</SELECT></TD>
   <TD><INPUT DATA-FIELD="freq" NAME="freq{{index}}" VALUE="{{frequency}}" ARIA-LABEL="频率 (Hz)" TYPE="number" MIN="0" MAX="4294967295" REQUIRED></TD>
   <TD><SELECT DATA-FIELD="mode" NAME="mode{{index}}" ARIA-LABEL="模式"><OPTION VALUE=""></OPTION>{{{modes}}}</SELECT></TD>

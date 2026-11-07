@@ -493,6 +493,31 @@ bool sleepOn(int x)
 }
 
 //
+// Wake up and leave the sleep mode on "CPU sleep" (SLEEP_LIGHT).
+//
+// "BLE standby" is meant to be a one-shot state, but it *is* a selectable sleep
+// mode: once it is stored, every later long press mutes the radio and powers
+// the SI4732 down. Waking therefore drops the mode back to CPU sleep -- display
+// off, radio still playing, Bluetooth still reachable -- which is what a long
+// press is expected to do. Without this the unit could stay stuck in standby
+// (an older build also wrote SLEEP_BLE_KEEPALIVE whenever the app sent 'Z').
+//
+// Waking first matters: sleepOn(false) decides what to restore from the
+// *current* mode, so switching the mode beforehand would skip the receiver
+// bring-up and leave the unit silent.
+//
+bool sleepWakeLight()
+{
+  sleepOn(false);
+  if(sleepModeIdx != SLEEP_LIGHT)
+  {
+    sleepModeIdx = SLEEP_LIGHT;
+    prefsRequestSave(SAVE_SETTINGS);
+  }
+  return(true);
+}
+
+//
 // Enter Bluetooth standby now, whatever the configured sleep mode is. Used by
 // the standby timer; the override is dropped on the next wake.
 //

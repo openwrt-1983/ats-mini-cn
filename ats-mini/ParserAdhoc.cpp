@@ -60,8 +60,10 @@ ParseResult parseAdhoc(ByteSpan frame, AdhocCommand& out) {
     if (band.size == 0 || mode.size == 0) return ParseResult::InvalidSyntax;
     if (!copy(band, out.band) || !copy(mode, out.mode)) return ParseResult::InvalidArgument;
     if (out.has_name) {
+      // Names are UTF-8, so bytes above 0x7F are part of a Chinese character.
       for (size_t i = 0; i < cursor.rest.size; ++i) {
-        if (cursor.rest.data[i] < 0x20 || cursor.rest.data[i] > 0x7e) return ParseResult::InvalidArgument;
+        const uint8_t c = cursor.rest.data[i];
+        if (c < 0x20 || c == 0x7f) return ParseResult::InvalidArgument;
       }
       if (!copy(cursor.rest, out.name)) return ParseResult::InvalidArgument;
     }
