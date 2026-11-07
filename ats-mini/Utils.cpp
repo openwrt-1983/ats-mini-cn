@@ -418,7 +418,7 @@ static void bleStandbyEnter()
   if(PIN_AMP_EN >= 0) digitalWrite(PIN_AMP_EN, LOW);
   netStop();
   radioStandbyEnter();
-  setCpuFrequencyMhz(80);
+  setCpuFrequencyMhz(CPU_FREQ_SLEEP);
   bleStandbyAdvertising(true);
 }
 
@@ -453,15 +453,19 @@ bool sleepOn(int x)
       // playing, so audio is deliberately left untouched. The BLE stack also
       // stays up, so the app can reconnect or send a command that wakes us.
       netStop();
-      setCpuFrequencyMhz(80);
+      setCpuFrequencyMhz(CPU_FREQ_SLEEP);
     }
   }
   else if((x==0) && sleep_on)
   {
     sleep_on = false;
     // Bring the CPU and the receiver back before touching audio or display.
+    // CPU_FREQ_RUN, not 240: this used to hardcode 240 while the build runs at
+    // 80 (sketch.yaml CPUFreq), so every wake silently tripled the clock and it
+    // stayed there -- the unit's speed depended on whether it had slept since
+    // power-on. Restoring the configured frequency keeps one clock per uptime.
     if(sleepModeIdx == SLEEP_LIGHT || sleepIsBleStandby())
-      setCpuFrequencyMhz(240);
+      setCpuFrequencyMhz(CPU_FREQ_RUN);
     bleStandbyAdvertising(false);
     radioStandbyLeave();
     if(bleStandbyMuted)

@@ -64,6 +64,14 @@ static constexpr const lgfx::IFont* FONT_DIGITS  = &lgfx::fonts::Font7;  // 48px
 #define SLEEP_LIGHT     2 // Screen off, radio keeps playing, BLE stays up
 #define SLEEP_BLE_KEEPALIVE 3 // TV style standby: screen/audio/receiver off, BLE stays up
 
+// CPU clock. The Arduino core runs setCpuFrequencyMhz(F_CPU / 1000000) before
+// setup(), so CPU_FREQ_RUN is whatever the build was configured for (the fqbn's
+// CPUFreq in sketch.yaml) -- never a hardcoded number that can drift away from
+// it. Sleep drops to CPU_FREQ_SLEEP and wake restores CPU_FREQ_RUN, so the unit
+// runs at the same clock for its whole uptime no matter how often it sleeps.
+#define CPU_FREQ_RUN   (F_CPU / 1000000UL)
+#define CPU_FREQ_SLEEP 80
+
 // Receiver
 #define SEEK_TIMEOUT   600000  // Max seek timeout (ms)
 
