@@ -783,15 +783,27 @@ void loop()
   int16_t encCountAccel = (int16_t)(encCounts >> 16);
   ButtonTracker::State button = pb1.update(digitalRead(ENCODER_PUSH_BUTTON) == LOW);
 
-  // Physical input must not wake the receiver any more. A brush against the
-  // knob -- or a press against something inside a bag -- used to power the
-  // radio back on and start playing. Only a 2 s hold (the isLongPressed branch
-  // below) wakes it now. The app and the serial terminal keep their own
-  // explicit wake commands, and the app never sends a click while asleep.
-  // Counts are dropped in every sleep mode, not just the BLE-keeping ones, so
-  // "lock", "CPU sleep" and "standby" all behave the same way from the knob.
+  // Physical wake policy. "BLE standby" is the only mode that still demands a
+  // 2 s hold: there the receiver has been powered down and the audio path
+  // muted, so a brush against the knob must not bring the radio back on.
+  // Every other sleep mode (lock, unlocked, CPU sleep) wakes on the first
+  // detent -- that is how the knob behaved before the hold-to-wake rule was
+  // introduced, and it is what the display-only modes expect.
+  // The detent that wakes the unit is consumed by the wake itself, so turning
+  // the knob to wake it never retunes or changes the volume on the way in.
   if(encCount && sleepOn())
+  {
+    if(!sleepIsBleStandby())
+    {
+      sleepOn(false);
+      touchActivity();
+      // Waking takes a couple hundred milliseconds (panel wake + full redraw).
+      // Detents that arrive meanwhile belong to the wake gesture, not to a
+      // tuning step, so drop them rather than replay them on the next pass.
+      consumeEncoderCounts();
+    }
     encCount = encCountAccel = 0;
+  }
   // Keep gesture ownership separate: releasing one control must not clear
   // a held gesture on the other, or affect physical long-press handling.
   static bool physicalPushAndRotate = false;
@@ -819,13 +831,12 @@ void loop()
   }
   else if(!physicalPushAndRotate && (button.wasClicked || button.wasShortPressed))
   {
-    // A short press must not wake a sleeping receiver: that is what the 2 s
-    // hold above is for. It used to wake on any click in BLE standby / CPU
-    // sleep (handleClick's sleepKeepsBle branch), which turned accidental
-    // touches into "the radio switched itself on". Bluetooth standby and CPU
-    // sleep are filtered here; "unlocked" sleep keeps its short-press volume
-    // adjustment, because there the radio is already playing.
-    if(!(sleepOn() && sleepKeepsBle()))
+    // Only "BLE standby" ignores a short press here -- that mode is woken by
+    // the 2 s hold above. In every other sleep mode a click wakes the unit
+    // immediately: handleClick's sleep branch restores the panel and returns
+    // before any menu or volume handling, so the waking press is swallowed and
+    // never doubles as a command.
+    if(!(sleepOn() && sleepIsBleStandby()))
       needRedraw |= handleClick(button.wasShortPressed);
   }
 
