@@ -334,6 +334,14 @@ static void remotePrintStatus(Stream* stream, RemoteState* state)
 //
 static bool remoteExecuteCommand(Stream* stream, RemoteState* state, const AdhocCommand& command)
 {
+  // A command from any remote channel (BLE, USB serial, TCP) counts as user
+  // activity: renew the display sleep timer and the standby countdown, exactly
+  // like turning the encoder on the unit. The periodic status stream does not
+  // go through here, so an app that is only mirroring the screen never keeps
+  // the display awake. Sleep/standby/wake commands below also renew -- waking
+  // with a stale timestamp would otherwise put the display straight back to
+  // sleep on the next loop.
+  touchActivity();
   using Id = AdhocCommand::Id;
   switch(command.id)
   {

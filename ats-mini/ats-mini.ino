@@ -732,14 +732,15 @@ bool handleRotation(int16_t enc, int16_t accelerated, bool pressed)
         break;
     }
   }
-  elapsedSleep = elapsedCommand = millis();
+  // A turn of the encoder is user activity, wherever it comes from.
+  touchActivity();
   return changed;
 }
 
 // Shared by the physical button, BLE HID, and ad hoc e/E commands.
 bool handleClick(bool shortPress)
 {
-  elapsedSleep = elapsedCommand = millis();
+  touchActivity();
   if(sleepOn())
   {
     // Bluetooth standby and CPU sleep (which keeps BLE alive) wake on any
@@ -764,7 +765,7 @@ bool handleClick(bool shortPress)
       currentCmd = shortPress ? CMD_VOLUME : CMD_MENU;
   }
   // Waking the display or loading schedules can take time.
-  elapsedSleep = elapsedCommand = millis();
+  touchActivity();
   return true;
 }
 
@@ -814,7 +815,7 @@ void loop()
       else sleepOn(false);
     }
     else sleepOn(true);
-    elapsedSleep = elapsedCommand = millis();
+    touchActivity();
   }
   else if(!physicalPushAndRotate && (button.wasClicked || button.wasShortPressed))
   {
@@ -836,7 +837,7 @@ void loop()
   const bool heldRotation = physicalPushAndRotate || blePushAndRotate();
   needRedraw |= heldRotation != pushAndRotate;
   pushAndRotate = heldRotation;
-  if(pushAndRotate) elapsedSleep = elapsedCommand = currentTime;
+  if(pushAndRotate) touchActivity();
 
   // Disable commands control
   if((currentTime - elapsedCommand) > ELAPSED_COMMAND)

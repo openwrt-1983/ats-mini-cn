@@ -53,6 +53,14 @@ void standbyTimerRestart();
 uint16_t standbyTimerRemainingMinutes();
 void standbyTimerTick();
 
+// Any user input -- a knob turn, a click, a command from the app, web or a
+// serial terminal -- counts as activity: it renews the display sleep timer
+// and the standby countdown. Defined in Utils.cpp; the timestamps live in
+// the main sketch.
+extern long elapsedSleep;
+extern long elapsedCommand;
+void touchActivity();
+
 // Main task only. Strings are copied; duration 0 keeps the status until replaced or cleared.
 // Pass nullptr for both lines to clear the status.
 void statusShow(const char *line1, const char *line2 = nullptr, uint32_t duration = 2000);

@@ -139,6 +139,21 @@ uint16_t standbyTimerRemainingMinutes()
   return (standbyTimerRemainingUs() + 59999999) / 60000000;
 }
 
+// One place where "the user did something" is recorded. Physical input calls
+// it from the main loop; every remote channel calls it once per executed
+// command, so a remote session renews the display sleep timer and the standby
+// countdown exactly like turning the encoder on the unit. Deliberately NOT
+// called for the periodic status stream: an app parked on the mirror screen
+// must not keep the display awake forever, and the watchdog's occasional 'g'
+// re-arm is rare enough to be harmless. The timestamps themselves
+// (elapsedSleep / elapsedCommand) are defined in the main sketch and declared
+// extern in Utils.h.
+void touchActivity()
+{
+  elapsedSleep = elapsedCommand = millis();
+  standbyTimerRestart();
+}
+
 static void holdOutputLow(int pin)
 {
   if(pin < 0) return;
