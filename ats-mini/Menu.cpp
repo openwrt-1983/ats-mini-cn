@@ -257,7 +257,10 @@ int getTotalSleepModes() { return(ITEM_COUNT(sleepModeDesc)); }
 // https://en.wikipedia.org/wiki/List_of_UTC_offsets
 // https://www.timeanddate.com/time/time-zones-interesting.html
 //
-uint8_t utcOffsetIdx = 8;
+// UTC+8 is index 28. The default used to be 8 (UTC-5, upstream's zone), which
+// made a freshly flashed unit show a clock 13 hours behind Beijing time until
+// the zone was picked by hand.
+uint8_t utcOffsetIdx = 28;
 const UTCOffset utcOffsets[] =
 {
   { -12 * 4, "UTC-12" },
@@ -613,7 +616,12 @@ static void dateTimeInit()
 
   if(!clockAvailable()) return;
 
-  time_t now = time(NULL);
+  // Show local time, not UTC: the footer clock applies the same offset, so the
+  // two numbers on screen must agree. This page used to print gmtime_r() raw
+  // (UTC) next to a date that clockGetDate() had already shifted, which read
+  // 8 hours behind the footer and could even pair a local date with the
+  // previous day's UTC hour.
+  time_t now = time(NULL) + getCurrentUTCOffset() * 15 * 60;
   struct tm fields;
   gmtime_r(&now, &fields);
   dateTimeHour = fields.tm_hour;
@@ -666,7 +674,13 @@ static void clickDateTime(bool shortPress)
   uint32_t epoch;
   if(clockUTCDateTimeToEpoch(dateTimeYear, dateTimeMonth, dateTimeDay,
                             dateTimeHour, dateTimeMinute, dateTimeSecond, &epoch))
-    clockSetEpoch(epoch);
+  {
+    // The page edits local time now, so undo the offset before handing the
+    // value to the RTC, which always stores UTC. The offset is a whole number
+    // of quarter hours, so seconds are never rounded away.
+    int64_t utc = (int64_t)epoch - (int64_t)getCurrentUTCOffset() * 15 * 60;
+    if(utc > 0) clockSetEpoch((uint32_t)utc);
+  }
 
   currentCmd = CMD_NONE;
 }
@@ -1860,7 +1874,12 @@ static void drawDateTime(int x, int y, int sx)
   static const uint8_t lengths[] = { 4, 2, 2, 2, 2, 2 };
   char date[16];
   char time[16];
+  char zone[14];
+  int offsetMinutes = getCurrentUTCOffset() * 15;
+  int offsetMagnitude = abs(offsetMinutes);
 
+  snprintf(zone, sizeof(zone), "(UTC%c%02d:%02d)",
+    offsetMinutes < 0? '-' : '+', offsetMagnitude / 60, offsetMagnitude % 60);
   snprintf(date, sizeof(date), "%04u-%02u-%02u",
     (unsigned)dateTimeYear, (unsigned)dateTimeMonth, (unsigned)dateTimeDay);
   snprintf(time, sizeof(time), "%02u:%02u:%02u",
@@ -1874,7 +1893,7 @@ static void drawDateTime(int x, int y, int sx)
   spr.setTextColor(TH.menu_item);
   spr.drawString(date, center, 41 + y, FONT_SMALL);
   spr.drawString(time, center, 64 + y, FONT_SMALL);
-  spr.drawString("(UTC)", center, 91 + y, FONT_SMALL);
+  spr.drawString(zone, center, 91 + y, FONT_SMALL);
 
   drawDateTimeHighlight(
     dateTimeField <= DATETIME_DAY ? date : time,

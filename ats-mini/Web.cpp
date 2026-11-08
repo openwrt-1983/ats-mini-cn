@@ -56,7 +56,7 @@ static void webPatchesPage(AsyncWebServerRequest *request);
 static void webPatchesComplete(AsyncWebServerRequest *request);
 static void webUploadPatch(AsyncWebServerRequest *request, const String &filename,
                            size_t index, uint8_t *data, size_t len, bool final);
-static bool webParseUTCDateTime(const String &text, uint32_t *epoch);
+static bool webParseDateTime(const String &text, uint32_t *epoch);
 
 static String webPage(const char *body, const char *title, std::initializer_list<PageValue> values,
                       std::initializer_list<PageFragment> fragments = {});
@@ -571,8 +571,16 @@ void webSetConfig(AsyncWebServerRequest *request)
     String dateTime = request->getParam("datetime", true)->value();
     if(dateTime != "")
     {
-      if(!webParseUTCDateTime(dateTime, &epoch))
-        return request->send(400, "text/plain", "Date/time must use the YYYY-mm-dd HH:MM:SS format and contain a valid UTC date and time.");
+      if(!webParseDateTime(dateTime, &epoch))
+        return request->send(400, "text/plain", "Date/time must use the YYYY-mm-dd HH:MM:SS format and contain a valid date and time.");
+      // The form now takes local time, so shift it back to UTC before it
+      // reaches the RTC. Use the offset submitted with this same request:
+      // webTick() applies configSettings.utcOffset later, so utcOffsetIdx still
+      // holds the previous zone here.
+      int64_t utc = (int64_t)epoch - (int64_t)utcOffsets[utcOffset].offset * 15 * 60;
+      if(utc <= 0)
+        return request->send(400, "text/plain", "Date/time is out of range for the selected time zone.");
+      epoch = (uint32_t)utc;
       setClock = true;
     }
   }
@@ -710,7 +718,10 @@ static void webSetWiFi(AsyncWebServerRequest *request)
     netRequestConnect();
 }
 
-static bool webParseUTCDateTime(const String &text, uint32_t *epoch)
+// Parses the form's YYYY-mm-dd HH:MM:SS by reading the fields as if they were
+// UTC (that is clockUTCDateTimeToEpoch's contract). The page collects local
+// time, so the caller subtracts the selected zone before storing the value.
+static bool webParseDateTime(const String &text, uint32_t *epoch)
 {
   int year, month, day, hour, minute, second;
   return(epoch && text.length() == 19 &&

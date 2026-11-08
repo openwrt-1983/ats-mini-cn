@@ -95,11 +95,20 @@ static String backupTimestamp()
   time_t now = time(nullptr);
   if(now < 1600000000L) return String("未对时");
 
+  // The header is read by people, so print local time and name the zone it
+  // used instead of raw UTC.
+  int offsetMinutes = getCurrentUTCOffset() * 15;
+  now += offsetMinutes * 60;
   struct tm fields;
   gmtime_r(&now, &fields);
   char text[24];
-  strftime(text, sizeof(text), "%Y-%m-%d %H:%M UTC", &fields);
-  return String(text);
+  strftime(text, sizeof(text), "%Y-%m-%d %H:%M", &fields);
+
+  char zone[16];
+  int magnitude = abs(offsetMinutes);
+  snprintf(zone, sizeof(zone), " (UTC%c%02d:%02d)",
+           offsetMinutes < 0? '-' : '+', magnitude / 60, magnitude % 60);
+  return String(text) + zone;
 }
 
 //

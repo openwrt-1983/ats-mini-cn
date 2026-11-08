@@ -11,7 +11,7 @@ static const char pageConfig[] PROGMEM = R"HTML(<H1>{{title}}</H1>
   <TABLE COLUMNS="2">
     <TR><TH COLSPAN="2" CLASS="HEADING">日期时间</TH></TR>
     <TR><TD CLASS="LABEL">使用浏览器时间</TD><TD><INPUT TYPE="CHECKBOX" ID="browserdatetime" ONCHANGE="browserDateTime()"></TD></TR>
-    <TR><TD CLASS="LABEL">UTC 日期时间</TD><TD><INPUT TYPE="TEXT" ID="datetime" NAME="datetime" PLACEHOLDER="YYYY-mm-dd HH:MM:SS"></TD></TR>
+    <TR><TD CLASS="LABEL">日期时间</TD><TD><INPUT TYPE="TEXT" ID="datetime" NAME="datetime" PLACEHOLDER="YYYY-mm-dd HH:MM:SS"><BR><SMALL>按下面选择的时区填本地时间，不是 UTC；留空表示不修改</SMALL></TD></TR>
     <TR><TD CLASS="LABEL">时区</TD><TD><SELECT ID="utcoffset" NAME="utcoffset">{{{utc_options}}}</SELECT></TD></TR>
     <TR><TH COLSPAN="2" CLASS="HEADING">界面</TH></TR>
     <TR><TD CLASS="LABEL">界面布局</TD><TD><SELECT NAME="uilayout">{{{layout_options}}}</SELECT></TD></TR>
@@ -49,9 +49,11 @@ function browserDateTime(submit) {
   const enabled = document.getElementById('browserdatetime').checked;
   const dateTime = document.getElementById('datetime');
   const utcOffset = document.getElementById('utcoffset');
+  const pad = value => String(value).padStart(2, '0');
   if(enabled) {
     const now = new Date();
-    dateTime.value = now.toISOString().slice(0,19).replace('T', ' ');
+    dateTime.value = now.getFullYear() + '-' + pad(now.getMonth() + 1) + '-' + pad(now.getDate())
+      + ' ' + pad(now.getHours()) + ':' + pad(now.getMinutes()) + ':' + pad(now.getSeconds());
     const minutes = -now.getTimezoneOffset();
     for(const option of utcOffset.options)
       if(Number(option.dataset.minutes) === minutes) utcOffset.value = option.value;
