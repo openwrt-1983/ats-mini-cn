@@ -64,7 +64,10 @@ static void radioStandbyLeave()
   rx.setup(RESET_PIN, bands[bandIdx].bandType == FM_BAND_TYPE ? FM_BAND_TYPE : MW_BAND_TYPE);
   patchesResetLoaded();
   selectBand(bandIdx, false);
-  rx.setVolume(volume);
+  // The chip powers up unmuted at the library default volume, with the
+  // amplifier and headphone clamp still shut. Keep the DAC silent here; the
+  // volume returns with the fade in muteOn() when the standby ends.
+  rx.setVolume(0);
   rx.setMaxSeekTime(SEEK_TIMEOUT);
   radioStandbyOn = false;
 }
@@ -162,7 +165,18 @@ static void holdOutputLow(int pin)
   gpio_hold_en((gpio_num_t)pin);
 }
 
-void receiverShutdown()
+// How long the wake press must still be held once setup() runs. The press
+// itself starts a few hundred milliseconds earlier (boot loader, PSRAM, flash),
+// so this lands the whole gesture at about the two seconds the unit uses to
+// go to standby.
+#define STANDBY_WAKE_HOLD_MS 1200
+
+// Deep sleep is the lowest power state the unit has: the CPU stops, the
+// backlight, amplifier and receiver supply are held low, and the SI4732 is
+// powered down. Without a wake source (the off timer) only a power cycle
+// brings it back; arming the encoder button turns the same shutdown into the
+// long press standby.
+static void deepSleepEnter(bool wakeOnButton)
 {
   // Bluetooth standby already muted the audio and cut the amplifier, and the
   // tuner is powered down, so touching them again would only poke a sleeping
@@ -185,16 +199,90 @@ void receiverShutdown()
   holdOutputLow(PIN_POWER_ON);
   gpio_deep_sleep_hold_en();
 
-  // Discard both the encoder wake and any pending light-sleep timer wake.
+  // Discard any pending light-sleep timer wake.
   esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_ALL);
-  rtc_gpio_pullup_dis((gpio_num_t)ENCODER_PUSH_BUTTON);
-  rtc_gpio_pulldown_dis((gpio_num_t)ENCODER_PUSH_BUTTON);
-  rtc_gpio_deinit((gpio_num_t)ENCODER_PUSH_BUTTON);
+
   pinMode(ENCODER_PUSH_BUTTON, INPUT);
   pinMode(ENCODER_PIN_A, INPUT);
   pinMode(ENCODER_PIN_B, INPUT);
-  esp_sleep_pd_config(ESP_PD_DOMAIN_RTC_PERIPH, ESP_PD_OPTION_OFF);
+
+  if(wakeOnButton)
+  {
+    // The wake level is "button down", and the long press that got us here is
+    // still held: let it end, or the chip would wake up on the spot.
+    while(digitalRead(ENCODER_PUSH_BUTTON) == LOW) delay(20);
+    delay(50); // Debounce margin, so a bouncing release is not a new press.
+    esp_sleep_enable_ext0_wakeup((gpio_num_t)ENCODER_PUSH_BUTTON, 0);
+    // The digital domain is off in deep sleep, so the pin needs the RTC
+    // pull-up: left floating it reads low and wakes the unit immediately.
+    rtc_gpio_pulldown_dis((gpio_num_t)ENCODER_PUSH_BUTTON);
+    rtc_gpio_pullup_en((gpio_num_t)ENCODER_PUSH_BUTTON);
+    // ext0 keeps its configuration in the RTC peripheral domain.
+    esp_sleep_pd_config(ESP_PD_DOMAIN_RTC_PERIPH, ESP_PD_OPTION_ON);
+  }
+  else
+  {
+    rtc_gpio_pullup_dis((gpio_num_t)ENCODER_PUSH_BUTTON);
+    rtc_gpio_pulldown_dis((gpio_num_t)ENCODER_PUSH_BUTTON);
+    rtc_gpio_deinit((gpio_num_t)ENCODER_PUSH_BUTTON);
+    esp_sleep_pd_config(ESP_PD_DOMAIN_RTC_PERIPH, ESP_PD_OPTION_OFF);
+  }
   esp_deep_sleep_start();
+}
+
+void receiverShutdown()
+{
+  deepSleepEnter(false);
+}
+
+//
+// Long press standby: the off timer's shutdown, but the encoder button stays
+// armed as the wake source. Waking is a full reset, so the receiver is set up
+// from scratch and the audio comes back with the stored band and volume.
+// Never returns.
+//
+void standbySleepEnter()
+{
+  deepSleepEnter(true);
+}
+
+//
+// True when the unit was woken from standby. Deep sleep leaves the supply pins
+// held low, so the holds are dropped here -- before setup() configures any pin.
+//
+bool standbyWoke()
+{
+  gpio_deep_sleep_hold_dis();
+  return esp_sleep_get_wakeup_cause() == ESP_SLEEP_WAKEUP_EXT0;
+}
+
+//
+// The wake press started before setup() runs (boot loader, PSRAM and flash
+// init take a few hundred milliseconds), so the button is already down here.
+// Staying on requires it to still be down after STANDBY_WAKE_HOLD_MS, which
+// together with the boot time makes the wake gesture roughly the same two
+// second press that puts the unit to sleep. A brush against the knob goes
+// straight back to standby instead of powering the receiver up for a moment.
+// When the press was too short this does not return.
+//
+void standbyWakeConfirm()
+{
+  uint32_t started = millis();
+  while(millis() - started < STANDBY_WAKE_HOLD_MS)
+  {
+    if(digitalRead(ENCODER_PUSH_BUTTON) != LOW)
+    {
+      // Nothing has been loaded or changed yet, so the stored settings must
+      // not be written back: prefsSave() here would save defaults over them.
+      esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_ALL);
+      esp_sleep_enable_ext0_wakeup((gpio_num_t)ENCODER_PUSH_BUTTON, 0);
+      rtc_gpio_pulldown_dis((gpio_num_t)ENCODER_PUSH_BUTTON);
+      rtc_gpio_pullup_en((gpio_num_t)ENCODER_PUSH_BUTTON);
+      esp_sleep_pd_config(ESP_PD_DOMAIN_RTC_PERIPH, ESP_PD_OPTION_ON);
+      esp_deep_sleep_start();
+    }
+    delay(10);
+  }
 }
 
 void offTimerTick()
@@ -326,6 +414,25 @@ const char *getMACAddress()
 }
 
 //
+// Ramp the SI4732 digital volume to the target level in small steps. Writing
+// the volume property in one jump makes the amplifier reproduce the whole
+// level change as a thump, so mute transitions fade instead. A full 0..63
+// sweep stays under ~40 ms, in the same ballpark as the fixed mute delays
+// this replaces.
+//
+void volumeFade(uint8_t target)
+{
+  int v = rx.getVolume();
+
+  while(v != (int)target)
+  {
+    v = (target > v) ? min(v + 4, (int)target) : max(v - 4, (int)target);
+    rx.setVolume(v);
+    delay(2);
+  }
+}
+
+//
 // Mute sound on (x=1) or off (x=0), or get current status (x=2)
 // With a hardware clamp, leave the amplifier powered to avoid an enable thump.
 // Do not call this too often because a short PIN_AMP_EN impulse can trigger amplifier mode D,
@@ -396,18 +503,24 @@ bool muteOn(uint8_t mode, int x, bool muteAmp)
   }
 
   if(mute) {
+    // Fade the SI4732 output down first: it is the level step that the
+    // amplifier reproduces as a thump, and a short ramp turns it into a
+    // soft fade.
+    volumeFade(0);
     if(muteAmp && PIN_AMP_EN >= 0) digitalWrite(PIN_AMP_EN, LOW);
     if(audioClamp) digitalWrite(AUDIO_MUTE, HIGH);
-    delay(50);
     rx.setAudioMute(true);
   }
 
   if(unmute) {
     if(audioClamp) digitalWrite(AUDIO_MUTE, LOW);
-    delay(50);
     rx.setAudioMute(false);
     // Enable audio amplifier to restore speaker output
     if(muteAmp && PIN_AMP_EN >= 0) digitalWrite(PIN_AMP_EN, HIGH);
+    // Let the amplifier input settle (coupling capacitors, enable transient)
+    // in silence, then bring the volume back with the same soft ramp.
+    delay(20);
+    volumeFade(volume);
   }
 
   switch(mode) {

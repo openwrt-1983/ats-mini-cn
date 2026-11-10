@@ -125,6 +125,10 @@ void setup()
   pinMode(ENCODER_PIN_A, INPUT_PULLUP);
   pinMode(ENCODER_PIN_B, INPUT_PULLUP);
 
+  // Back from long press standby: release the holds that kept the supply rails
+  // low. The rest of the wake handling waits until the rails are defined again.
+  bool standbyWake = standbyWoke();
+
   // Initially disable the audio amplifier until the SI4732 has been setup,
   // if the target board exposes a separate amplifier enable pin.
   if(PIN_AMP_EN >= 0)
@@ -142,12 +146,18 @@ void setup()
   digitalWrite(PIN_POWER_ON, HIGH);
   delay(100);
 
+  // Back from standby: the wake press started before this code ran (boot
+  // loader, PSRAM, flash), so holding it a little longer is the same two second
+  // gesture that put the unit to sleep. A press released too early goes
+  // straight back to standby and never returns from here.
+  if(standbyWake) standbyWakeConfirm();
+
   // The line below may be necessary to setup I2C pins on ESP32
   Wire.begin(ESP32_I2C_SDA, ESP32_I2C_SCL);
 
   // TFT display brightness control (PWM)
   // Note: At brightness levels below 100%, switching from the PWM may cause power spikes and/or RFI
-  ledcAttach(PIN_LCD_BL, 16000, 8);  // Pin assignment, 16kHz, 8-bit
+  ledcAttach(PIN_LCD_BL, 20000, 8);  // Pin assignment, 20kHz, 8-bit: fully above the audible range
   ledcWrite(PIN_LCD_BL, 0);          // Default value 0%
 
   // TFT display setup
@@ -164,7 +174,9 @@ void setup()
 
   // Press and hold Encoder button to force an preferences reset
   // Note: preferences reset is recommended after firmware updates
-  if(digitalRead(ENCODER_PUSH_BUTTON)==LOW)
+  // A standby wake arrives with the button down as well; that press is the
+  // wake gesture, not a factory reset request.
+  if(!standbyWake && digitalRead(ENCODER_PUSH_BUTTON)==LOW)
   {
     nvsErase();
     diskInit(true);
@@ -211,6 +223,10 @@ void setup()
   }
 
   rx.setup(RESET_PIN, MW_BAND_TYPE);
+  // The library leaves the chip unmuted at volume 30 after power up. Force
+  // silence now: the amplifier comes on below and the volume only fades in
+  // at the end of the setup, once the receiver has been fully configured.
+  rx.setVolume(0);
   // Comment the line above and uncomment the three lines below if you are using external ref clock (active crystal or signal generator)
   // rx.setRefClock(32768);
   // rx.setRefClockPrescaler(1);   // will work with 32768
@@ -251,11 +267,17 @@ void setup()
   // SI4732 STARTUP!
   initVfo();
   delay(50);
-  rx.setVolume(volume);
+  // Fade the volume in instead of jumping to it, then release the headphone
+  // clamp that kept the audio lines quiet during boot. There is no active
+  // mute at this point: the mute state always starts off on power up.
+  volumeFade(volume);
+  digitalWrite(AUDIO_MUTE, LOW);
   rx.setMaxSeekTime(SEEK_TIMEOUT);
 
   // Draw display for the first time
-  if(splashDraw())
+  // A standby wake goes straight to the receiver screen: the user is holding
+  // the knob and expects the radio, not a three second splash.
+  if(!standbyWake && splashDraw())
   {
     ledcWrite(PIN_LCD_BL, currentBrt);
     delay(3000);
@@ -274,10 +296,22 @@ void setup()
 
   // Start Bluetooth LE, if necessary
   bleInit(bleModeIdx);
+
+  // The button that woke the unit is usually still down. Wait for the release
+  // and clear the tracker, so it does not arrive as a click on the first pass
+  // of the main loop.
+  if(standbyWake)
+  {
+    while(digitalRead(ENCODER_PUSH_BUTTON) == LOW) delay(10);
+    pb1.reset();
+  }
 }
 
 
-int16_t accelerateEncoder(int8_t dir)
+// Called from the encoder interrupt, so it must live in RAM as well: a level
+// change that arrives while the flash cache is disabled (NVS or LittleFS write,
+// OTA) would otherwise call into unmapped code and crash.
+ICACHE_RAM_ATTR int16_t accelerateEncoder(int8_t dir)
 {
   const uint32_t speedThresholds[] = {350, 60, 45, 35, 25}; // ms between clicks
   const uint16_t accelFactors[] =      {1,  2,  4,  8, 16}; // corresponding multipliers
@@ -816,18 +850,33 @@ void loop()
   {
     // Wake up. If the configured sleep mode is "BLE standby", waking also
     // drops it back to CPU sleep: that mode is entered once on purpose, but
-    // leaving it stored meant every later long press muted the radio and
-    // powered the SI4732 down -- the user expects a long press to only blank
-    // the screen. CPU sleep is exactly that: display off, radio still playing,
-    // Bluetooth still reachable. A standby forced by the app or the timer is
-    // one shot already (standbyForced), so it must not touch the setting.
+    // leaving it stored meant every later wake muted the radio and powered the
+    // SI4732 down. CPU sleep is the display-only state: screen off, radio still
+    // playing, Bluetooth still reachable. A standby forced by the app or the
+    // timer is one shot already (standbyForced), so it must not touch the
+    // setting.
     if(sleepOn())
     {
       if(sleepModeIdx == SLEEP_BLE_KEEPALIVE) sleepWakeLight();
       else sleepOn(false);
+      touchActivity();
     }
-    else sleepOn(true);
-    touchActivity();
+    else
+    {
+      // A long press with the unit awake used to blank the screen. It now goes
+      // to the lowest power state the hardware has: deep sleep with everything
+      // shut down except the encoder button. The same press brings the unit
+      // back, which is a full reset -- the receiver is set up again and the
+      // audio returns with the stored band and volume. Never returns.
+#if ENCODER_PUSH_BUTTON == 0
+      // On boards where the encoder button doubles as BOOT, holding it at
+      // reset enters the ROM download mode instead of running the firmware,
+      // so it cannot be the wake source: keep the display-only sleep there.
+      sleepOn(true);
+#else
+      standbySleepEnter();
+#endif
+    }
   }
   else if(!physicalPushAndRotate && (button.wasClicked || button.wasShortPressed))
   {

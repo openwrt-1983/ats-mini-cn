@@ -13,27 +13,65 @@
 // Preferences saved here
 Preferences prefs;
 
+//
+// NVS is shared with other firmware versions and can be left half written by a
+// power loss, so a stored index may point outside the table it is used with.
+// Read it as an index only when it is in range, otherwise keep the default.
+//
+static uint8_t loadIndex(const char *key, uint8_t fallback, int total)
+{
+  uint8_t value = prefs.getUChar(key, fallback);
+  if(value < total) return(value);
+  return(fallback < total? fallback : 0);
+}
+
+// Same idea for the SSB calibration values.
+static int16_t clampCal(int16_t value)
+{
+  if(value < -MAX_CAL) return(-MAX_CAL);
+  if(value >  MAX_CAL) return( MAX_CAL);
+  return(value);
+}
+
 static uint32_t itIsTimeToSave = 0;       // Preferences to save, or 0 for none
 static bool savingPrefsFlag    = false;   // TRUE: Saving preferences
 static uint32_t storeTime      = millis();
 
 // To store any change to preferences, we need at least STORE_TIME
 // milliseconds of inactivity.
+// Saves are requested from the receiver task (menu, encoder) and from the web
+// task (HTTP handlers). Without a lock an |= from the web task can be dropped
+// by the clear below, so the request is lost and the change never reaches NVS.
+static portMUX_TYPE prefsMux = portMUX_INITIALIZER_UNLOCKED;
+
 void prefsRequestSave(uint32_t what, bool now)
 {
+  portENTER_CRITICAL(&prefsMux);
   // Underflow is ok here, see prefsTickTime()
   storeTime = millis() - (now? STORE_TIME : 0);
   itIsTimeToSave |= what;
+  portEXIT_CRITICAL(&prefsMux);
 }
 
 void prefsTickTime()
 {
-  // Save configuration if requested
-  if(itIsTimeToSave && ((millis() - storeTime) >= STORE_TIME))
+  uint32_t items;
+
+  // Take the request under the lock, then write to NVS outside of it: a flash
+  // write takes milliseconds and must not block the other task's request.
+  portENTER_CRITICAL(&prefsMux);
+  items = itIsTimeToSave && ((millis() - storeTime) >= STORE_TIME)? itIsTimeToSave : 0;
+  if(items) itIsTimeToSave = 0;
+  portEXIT_CRITICAL(&prefsMux);
+
+  if(items)
   {
-    prefsSave(itIsTimeToSave);
-    storeTime = millis();
-    itIsTimeToSave = 0;
+    prefsSave(items);
+
+    portENTER_CRITICAL(&prefsMux);
+    // A request that arrived while writing keeps its own timestamp
+    if(!itIsTimeToSave) storeTime = millis();
+    portEXIT_CRITICAL(&prefsMux);
   }
 }
 
@@ -109,12 +147,22 @@ bool prefsLoadBand(uint8_t idx, bool openPrefs)
   bool result = prefs.getBytes(name, &value, sizeof(value))==sizeof(value);
   if(result)
   {
-    bands[idx].currentFreq    = value.currentFreq;    // Frequency
-    bands[idx].bandMode       = value.bandMode;       // Modulation
-    bands[idx].currentStepIdx = value.currentStepIdx; // Step
-    bands[idx].bandwidthIdx   = value.bandwidthIdx;   // Bandwidth
-    bands[idx].usbCal         = value.usbCal;         // USB Calibration
-    bands[idx].lsbCal         = value.lsbCal;         // LSB Calibration
+    // Keep only the values that still fit this firmware's tables. A band mode
+    // outside the mode table, or a frequency outside the band, would be sent
+    // straight to the receiver and index other tables further down.
+    if(value.currentFreq >= bands[idx].minimumFreq &&
+       value.currentFreq <= bands[idx].maximumFreq)
+      bands[idx].currentFreq = value.currentFreq;
+
+    if(value.bandMode < getTotalModes())
+      bands[idx].bandMode = value.bandMode;
+
+    if(value.currentStepIdx >= 0)
+      bands[idx].currentStepIdx = value.currentStepIdx;
+
+    bands[idx].bandwidthIdx = value.bandwidthIdx;     // Checked again on use
+    bands[idx].usbCal       = clampCal(value.usbCal);
+    bands[idx].lsbCal       = clampCal(value.lsbCal);
   }
 
   // Done with band preferences
@@ -238,6 +286,14 @@ bool prefsLoadMemory(uint8_t idx, bool openPrefs)
   {
     if(!isValidName(memory.name, sizeof(memory.name)))
       memset(memory.name, 0, sizeof(memory.name));
+
+    // A slot written by another firmware or damaged by a power loss must never
+    // reach the band tables: tuneToMemory() copies these fields into the live
+    // band, and an unknown mode or band indexes tables out of range. Drop the
+    // whole record, leaving the slot empty.
+    if(memory.band >= getTotalBands() || memory.mode >= getTotalModes())
+      memory = {};
+
     setMemory(idx, memory);
   }
 
@@ -338,8 +394,12 @@ bool prefsLoad(uint32_t items)
     // Will be loading from settings
     prefs.begin("settings", true, STORAGE_PARTITION);
 
-    // Check currently saved version
-    if((items & SAVE_VERIFY) && (prefs.getUChar("Version", 0) != VER_SETTINGS))
+    // A section written by a newer firmware uses keys this build does not
+    // know, and a missing section means "use defaults", so only those two cases
+    // are refused. An older section is migrated key by key below instead of
+    // being thrown away: every key falls back to its current value.
+    uint8_t version = prefs.getUChar("Version", 0);
+    if((items & SAVE_VERIFY) && (version == 0 || version > VER_SETTINGS))
     {
       prefs.end();
       return(false);
@@ -347,9 +407,11 @@ bool prefsLoad(uint32_t items)
 
     // Load main global settings
     volume         = prefs.getUChar("Volume", volume);          // Current volume
-    bandIdx        = prefs.getUChar("Band", bandIdx);           // Current band
-    wifiModeIdx    = prefs.getUChar("WiFiMode", wifiModeIdx);   // WiFi connection mode
+    if(volume > 63) volume = 63;                                // Six bit volume
+    bandIdx        = loadIndex("Band", bandIdx, getTotalBands());
+    wifiModeIdx    = loadIndex("WiFiMode", wifiModeIdx, getTotalWiFiModes());
     currentBrt     = prefs.getUShort("Brightness", currentBrt); // Brightness
+    if(currentBrt < 10) currentBrt = 10;                        // Never blank the screen
     FmAgcIdx       = prefs.getUChar("FmAGC", FmAgcIdx);         // FM AGC/ATTN
     AmAgcIdx       = prefs.getUChar("AmAGC", AmAgcIdx);         // AM AGC/ATTN
     SsbAgcIdx      = prefs.getUChar("SsbAGC", SsbAgcIdx);       // SSB AGC/ATTN
@@ -360,13 +422,13 @@ bool prefsLoad(uint32_t items)
     currentSleep   = prefs.getUShort("Sleep", currentSleep);    // Sleep delay
     offTimerMinutes = prefs.getUShort("OffTimer", 0);
     standbyTimerMinutes = prefs.getUShort("StbyTimer", 0);
-    themeIdx       = prefs.getUChar("Theme", themeIdx);         // Color theme
-    rdsModeIdx     = prefs.getUChar("RDSMode", rdsModeIdx);     // RDS mode
-    sleepModeIdx   = prefs.getUChar("SleepMode", sleepModeIdx); // Sleep mode
+    themeIdx       = loadIndex("Theme", themeIdx, getTotalThemes());
+    rdsModeIdx     = loadIndex("RDSMode", rdsModeIdx, getTotalRDSModes());
+    sleepModeIdx   = loadIndex("SleepMode", sleepModeIdx, getTotalSleepModes());
     zoomMenu       = prefs.getUChar("ZoomMenu", zoomMenu);      // TRUE: Zoom menu
     scrollDirection = prefs.getBool("ScrollDir", scrollDirection<0)? -1:1; // TRUE: Reverse scroll
     setEncoderHalfStep(prefs.getBool("EncHalfStep", encoderHalfStep)); // Encoder half-step mode
-    utcOffsetIdx   = prefs.getUChar("UTCOffset", utcOffsetIdx); // UTC Offset
+    utcOffsetIdx   = loadIndex("UTCOffset", utcOffsetIdx, getTotalUTCOffsets());
     uint32_t squelch = prefs.getUInt("Squelch", ((uint32_t)currentSquelch[FM]) |
                                                 ((uint32_t)currentSquelch[LSB] << 8) |
                                                 ((uint32_t)currentSquelch[USB] << 16) |
@@ -375,14 +437,14 @@ bool prefsLoad(uint32_t items)
     currentSquelch[LSB] = (squelch >> 8) & 0xff;
     currentSquelch[USB] = (squelch >> 16) & 0xff;
     currentSquelch[AM]  = (squelch >> 24) & 0xff;
-    FmRegionIdx    = prefs.getUChar("FmRegion", FmRegionIdx);   // FM region
-    fmStereoIdx    = prefs.getUChar("FmStereo", fmStereoIdx);   // FM stereo mode
+    FmRegionIdx    = loadIndex("FmRegion", FmRegionIdx, getTotalFMRegions());
+    fmStereoIdx    = loadIndex("FmStereo", fmStereoIdx, getTotalFMStereoModes());
     audioClamp     = prefs.getBool("AudioClamp", true);        // Hardware audio clamp present
     dspPatchesIdx  = prefs.getUChar("DSPPatchset", DSP_PATCHES_DEFAULT); // Uploaded patch set
-    uiLayoutIdx    = prefs.getUChar("UILayout", uiLayoutIdx);   // UI Layout
-    bleModeIdx     = prefs.getUChar("BLEMode", bleModeIdx);     // Bluetooth mode
-    usbModeIdx     = prefs.getUChar("USBMode", usbModeIdx);     // USB mode
-    tcpModeIdx     = prefs.getUChar("TCPMode", TCP_OFF);        // TCP mode
+    uiLayoutIdx    = loadIndex("UILayout", uiLayoutIdx, getTotalUILayouts());
+    bleModeIdx     = loadIndex("BLEMode", bleModeIdx, getTotalBluetoothModes());
+    usbModeIdx     = loadIndex("USBMode", usbModeIdx, getTotalUSBModes());
+    tcpModeIdx     = loadIndex("TCPMode", tcpModeIdx, getTotalTCPModes());
 
     // Done with global settings
     prefs.end();
@@ -397,8 +459,12 @@ bool prefsLoad(uint32_t items)
     // Will be loading from bands
     prefs.begin("bands", true, STORAGE_PARTITION);
 
-    // Check currently saved version
-    if((items & SAVE_VERIFY) && (prefs.getUChar("Version", 0) != VER_BANDS))
+    // Same rule as the settings section: an older layout is migrated, because
+    // prefsLoadBand() keeps the band's built-in defaults for anything that no
+    // longer fits. Refusing outright would silently wipe the tuned frequency
+    // and the SSB calibration of every band after a firmware update.
+    uint8_t version = prefs.getUChar("Version", 0);
+    if((items & SAVE_VERIFY) && (version == 0 || version > VER_BANDS))
     {
       prefs.end();
       return(false);
@@ -427,8 +493,10 @@ bool prefsLoad(uint32_t items)
     // Will be loading from memories
     prefs.begin("memories", true, STORAGE_PARTITION);
 
-    // Check currently saved version
-    if((items & SAVE_VERIFY) && (prefs.getUChar("Version", 0) != VER_MEMORIES))
+    // Same rule again: prefsLoadMemory() understands the older slot layout, so
+    // an OTA update keeps all 99 memories instead of returning early.
+    uint8_t version = prefs.getUChar("Version", 0);
+    if((items & SAVE_VERIFY) && (version == 0 || version > VER_MEMORIES))
     {
       prefs.end();
       return(false);

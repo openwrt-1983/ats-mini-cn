@@ -1,0 +1,1 @@
+A remote command that arrives after the previous one timed out is now executed instead of being silently swallowed, and a memory name that is not valid UTF-8 is rejected with an error instead of being stored and then dropped at the next power on. The rotary encoder can no longer crash the receiver while the flash is being written.

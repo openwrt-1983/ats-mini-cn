@@ -1,0 +1,1 @@
+Saving settings from the web interface while the receiver is running can no longer lose the change or disturb the receiver's own NVS access, changing the web login or Wi-Fi details no longer risks a crash, and a page that cannot be built because memory ran low now reports an error instead of resetting the unit.

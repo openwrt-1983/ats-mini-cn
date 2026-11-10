@@ -38,6 +38,17 @@ static String loginUsername = "";
 static String loginPassword = "";
 static AsyncWebServer server(80);
 
+// Guards the two credential strings: webInit() runs on the receiver task while
+// the HTTP handlers run on the AsyncTCP task.
+static std::mutex authMutex;
+
+// The HTTP handlers run on the AsyncTCP task, the receiver loop on its own.
+// A Preferences object keeps the open NVS handle in its own fields, so both
+// tasks must not share one: a second begin() would drop the first handle and
+// an end() would close the namespace the other task is still using. The web
+// side therefore owns a private instance; NVS serializes access internally.
+static Preferences webPrefs;
+
 static void webSetConfig(AsyncWebServerRequest *request);
 static void webSetWiFi(AsyncWebServerRequest *request);
 static void webSetMemories(AsyncWebServerRequest *request);
@@ -95,8 +106,17 @@ struct BackupUploadState
 
 static bool webIsAuthenticated(AsyncWebServerRequest *request)
 {
-  return(loginUsername == "" || loginPassword == "" ||
-         request->authenticate(loginUsername.c_str(), loginPassword.c_str()));
+  // Copy under the lock: authenticate() keeps using the strings while webInit()
+  // may reassign them on the receiver task, and a reassignment reallocates the
+  // buffer the pointers refer to.
+  String user, pass;
+  {
+    std::lock_guard<std::mutex> lock(authMutex);
+    user = loginUsername;
+    pass = loginPassword;
+  }
+
+  return(user == "" || pass == "" || request->authenticate(user.c_str(), pass.c_str()));
 }
 
 // One download owns the PSRAM buffer until completion, disconnect, or failure.
@@ -124,8 +144,10 @@ static const char *webScreenshotAcquire()
   screenshot.state = screenshot.Pending;
 
   // Yield to the main loop, but do not hold up the async web task indefinitely.
+  // One loop iteration is enough when the receiver is responsive; a longer
+  // wait only blocks every other request while the main task is stuck elsewhere.
   uint32_t started = millis();
-  while(screenshot.state == screenshot.Pending && millis() - started < 1000)
+  while(screenshot.state == screenshot.Pending && millis() - started < 500)
   {
     lock.unlock();
     delay(1);
@@ -226,10 +248,16 @@ bool webTick()
 void webInit()
 {
   // Reload authentication on each network initialization, but register routes once.
-  prefs.begin("network", true, STORAGE_PARTITION);
-  loginUsername = prefs.getString("loginusername", "");
-  loginPassword = prefs.getString("loginpassword", "");
-  prefs.end();
+  String user, pass;
+  webPrefs.begin("network", true, STORAGE_PARTITION);
+  user = webPrefs.getString("loginusername", "");
+  pass = webPrefs.getString("loginpassword", "");
+  webPrefs.end();
+  {
+    std::lock_guard<std::mutex> lock(authMutex);
+    loginUsername = user;
+    loginPassword = pass;
+  }
 
   static bool initialized = false;
   if(initialized) return;
@@ -518,6 +546,7 @@ static void webRestoreComplete(AsyncWebServerRequest *request)
     {"navigation", [](String &out) { webNavigation(out, "/config"); }}
   });
   AsyncWebServerResponse *response = request->beginResponse(code, "text/html", page);
+  if(!response) return request->send(503, "text/plain", "内存不足，请重试。");
   response->addHeader("Cache-Control", "no-store");
   response->addHeader("Connection", "close");
   request->send(response);
@@ -660,16 +689,22 @@ static void webSetWiFi(AsyncWebServerRequest *request)
   if(!webConfigNumber(request, "wifimode", wifiMode, 0, getTotalWiFiModes() - 1))
     return request->send(400, "text/plain", "Invalid Wi-Fi mode.");
 
-  prefs.begin("network", false, STORAGE_PARTITION);
+  webPrefs.begin("network", false, STORAGE_PARTITION);
 
   // Save user name and password
   if(request->hasParam("username", true) && request->hasParam("password", true))
   {
-    loginUsername = request->getParam("username", true)->value();
-    loginPassword = request->getParam("password", true)->value();
+    String user = request->getParam("username", true)->value();
+    String pass = request->getParam("password", true)->value();
 
-    prefs.putString("loginusername", loginUsername);
-    prefs.putString("loginpassword", loginPassword);
+    {
+      std::lock_guard<std::mutex> lock(authMutex);
+      loginUsername = user;
+      loginPassword = pass;
+    }
+
+    webPrefs.putString("loginusername", user);
+    webPrefs.putString("loginpassword", pass);
   }
 
   // Save SSIDs and their passwords
@@ -685,8 +720,8 @@ static void webSetWiFi(AsyncWebServerRequest *request)
     {
       String ssid = request->getParam(nameSSID, true)->value();
       String pass = request->getParam(namePASS, true)->value();
-      prefs.putString(nameSSID, ssid);
-      prefs.putString(namePASS, pass);
+      webPrefs.putString(nameSSID, ssid);
+      webPrefs.putString(namePASS, pass);
       haveSSID |= ssid != "" && pass != "";
     }
   }
@@ -694,9 +729,9 @@ static void webSetWiFi(AsyncWebServerRequest *request)
   // Save hidden SSID scanning preference
   bool wifiScanHidden = request->hasParam("wifiscanhidden", true);
   netSetScanHidden(wifiScanHidden);
-  prefs.putBool("wifiscanhidden", wifiScanHidden);
+  webPrefs.putBool("wifiscanhidden", wifiScanHidden);
 
-  prefs.end();
+  webPrefs.end();
 
   if(wifiMode != wifiModeIdx)
   {
@@ -1061,19 +1096,26 @@ const String webConfigPage()
 
 static const String webWiFiPage()
 {
-  prefs.begin("network", true, STORAGE_PARTITION);
-  String ssid1 = prefs.getString("wifissid1", "");
-  String pass1 = prefs.getString("wifipass1", "");
-  String ssid2 = prefs.getString("wifissid2", "");
-  String pass2 = prefs.getString("wifipass2", "");
-  String ssid3 = prefs.getString("wifissid3", "");
-  String pass3 = prefs.getString("wifipass3", "");
-  bool scanHidden = prefs.getBool("wifiscanhidden", false);
-  prefs.end();
+  String user, pass;
+  {
+    std::lock_guard<std::mutex> lock(authMutex);
+    user = loginUsername;
+    pass = loginPassword;
+  }
+
+  webPrefs.begin("network", true, STORAGE_PARTITION);
+  String ssid1 = webPrefs.getString("wifissid1", "");
+  String pass1 = webPrefs.getString("wifipass1", "");
+  String ssid2 = webPrefs.getString("wifissid2", "");
+  String pass2 = webPrefs.getString("wifipass2", "");
+  String ssid3 = webPrefs.getString("wifissid3", "");
+  String pass3 = webPrefs.getString("wifipass3", "");
+  bool scanHidden = webPrefs.getBool("wifiscanhidden", false);
+  webPrefs.end();
 
   return webPage(pageWiFi, pageWiFiTitle, {
     {"title", pageWiFiTitle},
-    {"username", loginUsername}, {"password", loginPassword},
+    {"username", user}, {"password", pass},
     {"ssid1", ssid1}, {"pass1", pass1}, {"ssid2", ssid2}, {"pass2", pass2},
     {"ssid3", ssid3}, {"pass3", pass3}, {"scan_hidden", scanHidden? "CHECKED" : ""}
   }, {
@@ -1102,6 +1144,7 @@ static void webUpdatePage(AsyncWebServerRequest *request, const OtaStatus &statu
   });
   if(!code) code = status.phase == OTA_FAILED? 400 : 200;
   AsyncWebServerResponse *response = request->beginResponse(code, "text/html", page);
+  if(!response) return request->send(503, "text/plain", "内存不足，请重试。");
   response->addHeader("Cache-Control", "no-store");
   response->addHeader("Connection", "close");
   request->send(response);
@@ -1250,6 +1293,7 @@ static void webPatchesPage(AsyncWebServerRequest *request)
     }}
   });
   AsyncWebServerResponse *response = request->beginResponse(200, "text/html", page);
+  if(!response) return request->send(503, "text/plain", "内存不足，请重试。");
   response->addHeader("Cache-Control", "no-store");
   if(busy) response->addHeader("Refresh", "2; url=/patches");
   request->send(response);

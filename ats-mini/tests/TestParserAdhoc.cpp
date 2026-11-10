@@ -108,9 +108,14 @@ static void testInvalidMemory() {
   for (const char* input : {"#0,MW,100,AM\r", "#,MW,100,AM\r", "#4294967296,MW,100,AM\r",
                             "#1,TOO-LONG,100,AM\r", "#1,MW,100,USBB\r",
                             "#1,MW,,AM\r", "#1,MW,-1,AM\r", "#1,MW,4294967296,AM\r",
-                            "#1,MW,100,AM,1234567890\r", "#1,MW,100,AM,a\tb\r"}) {
+                            "#1,MW,100,AM,123456789012345678901234567890\r", "#1,MW,100,AM,a\tb\r"}) {
     assert(parseAdhoc(bytes(input), command) == ParseResult::InvalidArgument);
   }
+  // A name longer than the buffer used to be the only limit; the parser now
+  // also rejects sequences that are not valid UTF-8, because the storage layer
+  // drops a slot whose name it cannot decode.
+  assert(parseAdhoc(bytes(std::string("#1,MW,100,AM,\xe4\xb8\r")), command) == ParseResult::InvalidArgument);
+  assert(parseAdhoc(bytes(std::string("#1,MW,100,AM,\xe4\xb8\xad\r")), command) == ParseResult::Ready);
   for (char byte : {char(0), char(0x7F), char(0x80)}) {
     assert(parseAdhoc(bytes(std::string("#1,MW,100,AM,") + byte + "\r"), command) == ParseResult::InvalidArgument);
   }

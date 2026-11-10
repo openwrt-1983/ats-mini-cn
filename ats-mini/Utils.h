@@ -38,7 +38,20 @@ bool standbyEnter();
 // Wake up and set the sleep mode to CPU sleep (SLEEP_LIGHT).
 bool sleepWakeLight();
 bool muteOn(uint8_t mode, int x = 2, bool muteAmp = false);
+// Ramp the SI4732 digital volume to the target in small steps (click-free mute transitions)
+void volumeFade(uint8_t target);
 void receiverShutdown();
+// Long press standby: deep sleep with the encoder button as the only wake
+// source. Never returns; waking is a full reset that sets the receiver up
+// again and restores the stored band and volume.
+void standbySleepEnter();
+// True when the unit was woken from standby. Releases the pad holds that the
+// standby left behind, so call it before setup() configures any pin.
+bool standbyWoke();
+// After a standby wake: returns once the button has been held long enough.
+// A press that is released too early goes straight back to standby, so this
+// does not return in that case.
+void standbyWakeConfirm();
 
 // Configured duration is saved; a fresh countdown starts on power-up.
 extern uint16_t offTimerMinutes;

@@ -37,7 +37,7 @@ Controls are implemented through the encoder knob:
 | Rotate                 | Tunes frequency, navigates menu, adjusts parameters.                  |
 | Click (<0.5 sec)       | Opens menu, selects.                                                  |
 | Short press (>0.5 sec) | Volume shortcut in VFO mode, context-dependent action in other modes. |
-| Long press (>2 sec)    | Sleep on/off.                                                         |
+| Long press (>2 sec)    | Standby on/off: deep sleep, the same press wakes the receiver.        |
 | Press and rotate       | Direct frequency input mode, fine tuning in Seek mode.                |
 
 ### Direct frequency input mode

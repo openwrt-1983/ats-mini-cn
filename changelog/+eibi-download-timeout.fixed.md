@@ -1,0 +1,1 @@
+Loading the EiBi schedule no longer locks the receiver up when the connection stalls: a transfer that stops delivering data is now abandoned and reported, instead of spinning forever and requiring the battery to be pulled.

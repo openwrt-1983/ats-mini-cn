@@ -1,6 +1,15 @@
 #include "BleUartPeripheral.h"
 #include <host/ble_hs.h>
 
+namespace
+{
+// A notification whose status callbacks never arrive (the peer stops
+// acknowledging while the link still looks alive) would otherwise keep flush()
+// and write() in their retry loops forever. Giving up after this long without
+// any progress keeps the caller - the receiver loop - responsive.
+constexpr uint32_t BLE_TX_STALL_TIMEOUT_MS = 2000;
+}
+
 bool BleUartPeripheral::canSend() const
 {
   return (txCh != nullptr) &&
@@ -167,11 +176,14 @@ void BleUartPeripheral::onWrite(BLECharacteristic* characteristic, ble_gap_conn_
   size_t byteCount = characteristic->getLength();
   std::lock_guard<std::mutex> lock(rxMutex);
   if(desc->conn_handle != rxConnHandle) return;
-  size_t room = rxBuf.room();
-  if (byteCount > room)
-    byteCount = room;
-  if ((data != nullptr) && (byteCount > 0))
-    rxBuf.write((const char*)data, byteCount);
+  if((data == nullptr) || (byteCount == 0)) return;
+
+  // Drop the frame whole when the ring is full. Writing only the bytes that
+  // fit would splice the tail of this command onto the next one and execute a
+  // command the peer never sent.
+  if(byteCount > rxBuf.room()) return;
+
+  rxBuf.write((const char*)data, byteCount);
 }
 
 void BleUartPeripheral::onSubscribe(BLECharacteristic* characteristic, ble_gap_conn_desc* desc, uint16_t subValue)
@@ -281,11 +293,26 @@ InputEvent BleUartPeripheral::readInput(uint8_t& byte)
 
 void BleUartPeripheral::flush()
 {
+  uint32_t lastProgress = millis();
+
   while (!txBuf.empty() || (txPendingLen > 0))
   {
     if (!canSend()) break;
-    if (pumpTx() == 0)
-      delay(1);
+
+    if (pumpTx() != 0)
+    {
+      lastProgress = millis();
+      continue;
+    }
+
+    if ((uint32_t)(millis() - lastProgress) >= BLE_TX_STALL_TIMEOUT_MS)
+    {
+      clearPendingTx();
+      txBuf.flush();
+      break;
+    }
+
+    delay(1);
   }
 }
 
@@ -294,6 +321,8 @@ size_t BleUartPeripheral::write(const uint8_t* data, size_t size)
   if ((txCh == nullptr) || !canSend()) return 0;
 
   size_t writtenByteCount = 0;
+  uint32_t lastProgress = millis();
+
   while (writtenByteCount < size)
   {
     pumpTx();
@@ -301,6 +330,12 @@ size_t BleUartPeripheral::write(const uint8_t* data, size_t size)
     bool wasEmpty = txBuf.empty();
     size_t queuedByteCount = txBuf.write((const char*)data + writtenByteCount, size - writtenByteCount);
     writtenByteCount += queuedByteCount;
+
+    if (queuedByteCount > 0)
+      lastProgress = millis();
+    else if ((uint32_t)(millis() - lastProgress) >= BLE_TX_STALL_TIMEOUT_MS)
+      break;  // Stalled: return what was accepted instead of blocking forever
+
     if ((queuedByteCount > 0) && wasEmpty && (txPendingLen == 0) && (txNotifyState == BleUartTxNotifyState::Idle))
     {
       uint32_t deferUntilMs = millis() + BLE_TX_DEFER_MS;
@@ -342,7 +377,9 @@ size_t BleUartPeripheral::printf(const char* format, ...)
   va_end(args);
   if (requiredSize == 0)
   {
-    return write((uint8_t*)&dummy, 1);
+    // Empty format: nothing to send. Writing the dummy byte put a stray NUL
+    // character on the UART stream, which the peer reads as data.
+    return 0;
   }
   else if (requiredSize > 0)
   {

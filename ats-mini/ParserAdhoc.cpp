@@ -29,6 +29,47 @@ static FramingDecision frameAdhoc(ByteSpan input) {
 
 const FramingRules command_parser::adhocFraming = {frameAdhoc, newline};
 
+// Names are UTF-8. Anything malformed is rejected here rather than stored:
+// the storage layer validates the same way, and a slot whose name it cannot
+// read is silently erased, so the remote user would lose a memory without
+// ever seeing an error.
+static bool validNameText(ByteSpan text) {
+  size_t i = 0;
+  while (i < text.size) {
+    const uint8_t c = text.data[i];
+    if (c < 0x80) {
+      if (c < 0x20 || c == 0x7f) return false;
+      ++i;
+      continue;
+    }
+
+    size_t length;
+    uint32_t code;
+    if      ((c & 0xe0) == 0xc0) { length = 2; code = c & 0x1f; }
+    else if ((c & 0xf0) == 0xe0) { length = 3; code = c & 0x0f; }
+    else if ((c & 0xf8) == 0xf0) { length = 4; code = c & 0x07; }
+    else return false;
+
+    // Truncated sequence: the continuation bytes are not in this frame.
+    if (i + length > text.size) return false;
+
+    for (size_t k = 1; k < length; ++k) {
+      const uint8_t next = text.data[i + k];
+      if ((next & 0xc0) != 0x80) return false;
+      code = (code << 6) | (next & 0x3f);
+    }
+
+    // Overlong encodings, surrogates and code points above U+10FFFF.
+    if ((length == 2 && code < 0x80) ||
+        (length == 3 && code < 0x800) ||
+        (length == 4 && code < 0x10000) ||
+        (code >= 0xd800 && code <= 0xdfff) || code > 0x10ffff) return false;
+
+    i += length;
+  }
+  return true;
+}
+
 ParseResult parseAdhoc(ByteSpan frame, AdhocCommand& out) {
   out = {};
   using Id = AdhocCommand::Id;
@@ -60,11 +101,9 @@ ParseResult parseAdhoc(ByteSpan frame, AdhocCommand& out) {
     if (band.size == 0 || mode.size == 0) return ParseResult::InvalidSyntax;
     if (!copy(band, out.band) || !copy(mode, out.mode)) return ParseResult::InvalidArgument;
     if (out.has_name) {
-      // Names are UTF-8, so bytes above 0x7F are part of a Chinese character.
-      for (size_t i = 0; i < cursor.rest.size; ++i) {
-        const uint8_t c = cursor.rest.data[i];
-        if (c < 0x20 || c == 0x7f) return ParseResult::InvalidArgument;
-      }
+      // Names are UTF-8, so bytes above 0x7F are part of a Chinese character,
+      // but the sequence itself still has to be well formed.
+      if (!validNameText(cursor.rest)) return ParseResult::InvalidArgument;
       if (!copy(cursor.rest, out.name)) return ParseResult::InvalidArgument;
     }
     out.id = Id::SetMemory;

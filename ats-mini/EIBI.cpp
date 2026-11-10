@@ -17,6 +17,7 @@
 #ifndef EIBI_URL
 #define EIBI_URL  "http://eibispace.de/dx/eibi.txt"
 #endif
+#define EIBI_HTTP_TIMEOUT_MS  15000  // Abandon the transfer when no data arrives for this long
 
 extern ButtonTracker pb1;
 
@@ -424,7 +425,18 @@ bool eibiLoadSchedule()
   int byteCnt, lineCnt, charCnt;
   char charBuf[200];
 
-  for(byteCnt = charCnt = lineCnt = 0 ; http.connected() && (totalLen<0 || byteCnt<totalLen) ; )
+  // A half-open connection leaves the stream empty forever while the socket
+  // still reports itself as connected, so the loop would never end and the
+  // receiver would stay locked up until the battery is pulled. Watch the last
+  // byte instead: the server sends the schedule steadily, so a long silence
+  // means the link is gone.
+  uint32_t lastData = millis();
+
+  // Set when the filesystem refuses a record, which stops the transfer instead
+  // of installing a silently truncated schedule.
+  bool writeFailed = false;
+
+  for(byteCnt = charCnt = lineCnt = 0 ; !writeFailed && http.connected() && (totalLen<0 || byteCnt<totalLen) ; )
   {
     if(consumeAbortPending())
     {
@@ -435,11 +447,23 @@ bool eibiLoadSchedule()
       return(false);
     }
 
-    if(!stream->available()) delay(1);
+    if(!stream->available())
+    {
+      if((uint32_t)(millis() - lastData) >= EIBI_HTTP_TIMEOUT_MS)
+      {
+        file.close();
+        http.end();
+        LittleFS.remove(TEMP_PATH);
+        statusShow(eibiMessage, "Transfer timed out!");
+        return(false);
+      }
+      delay(1);
+    }
     else
     {
       char c = stream->read();
       byteCnt++;
+      lastData = millis();
 
       if(c!='\n' && charCnt<sizeof(charBuf)-1) charBuf[charCnt++] = c;
       else
@@ -463,7 +487,11 @@ bool eibiLoadSchedule()
           if(eibiParseLine(p, entry))
           {
             // Write it to the output file
-            file.write((uint8_t*)&entry, sizeof(entry));
+            if(file.write((uint8_t*)&entry, sizeof(entry)) != sizeof(entry))
+            {
+              writeFailed = true;
+              break;
+            }
             lineCnt++;
 
             if(!(lineCnt & 31))
@@ -487,9 +515,32 @@ bool eibiLoadSchedule()
   file.close();
   http.end();
 
-  // Move new schedule to its permanent place
-  LittleFS.remove(EIBI_PATH);
-  LittleFS.rename(TEMP_PATH, EIBI_PATH);
+  // Only a complete, non-empty transfer is promoted. The previous behaviour
+  // removed the installed table first, so a truncated download, a full
+  // filesystem, or a file without a single usable record left the receiver
+  // with no schedule at all.
+  if(writeFailed)
+  {
+    LittleFS.remove(TEMP_PATH);
+    statusShow(eibiMessage, "Out of space!");
+    return(false);
+  }
+
+  if(!lineCnt)
+  {
+    LittleFS.remove(TEMP_PATH);
+    statusShow(eibiMessage, "No entries!");
+    return(false);
+  }
+
+  // Move new schedule to its permanent place. rename() replaces the existing
+  // table, so a failure leaves the old one in place.
+  if(!LittleFS.rename(TEMP_PATH, EIBI_PATH))
+  {
+    LittleFS.remove(TEMP_PATH);
+    statusShow(eibiMessage, "Failed to save!");
+    return(false);
+  }
 
   // Success
   identifyFrequency(currentFrequency);

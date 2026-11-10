@@ -25,13 +25,17 @@
 // settle time buys nothing here.
 #define BATT_ADC_SPACING_US   120
 #define BATT_FILTER_ALPHA    0.30f  // IIR weight of a new measurement (0..1)
+#define BATT_FILTER_ALPHA_SLOW 0.02f  // IIR weight of a new measurement in the slow SOC path (0..1)
 #define BATT_SAMPLE_INTERVAL  500   // ms between real measurements
 #define BATT_DISPLAY_HYST    0.01f  // Volts; keeps the last digit from flickering
 
-#define BATT_SOC_LEVEL1      3.680  // Battery SOC voltage for 25%
-#define BATT_SOC_LEVEL2      3.780  // Battery SOC voltage for 50%
-#define BATT_SOC_LEVEL3      3.880  // Battery SOC voltage for 75%
-#define BATT_SOC_HYST_2      0.020  // Battery SOC hyteresis voltage divided by 2
+// Level thresholds for the four SOC bars, on a realistic Li-ion open circuit
+// voltage curve. The previous values (3.68/3.78/3.88) put a cell at about
+// half charge into the top bucket.
+#define BATT_SOC_LEVEL1      3.740  // Battery SOC voltage for 25%
+#define BATT_SOC_LEVEL2      3.870  // Battery SOC voltage for 50%
+#define BATT_SOC_LEVEL3      4.000  // Battery SOC voltage for 75%
+#define BATT_SOC_HYST_2      0.030  // Battery SOC hyteresis voltage divided by 2
 
 // A single 18650 never reads outside this window. Anything else means the ADC
 // is not connected/not settled yet, so the reading is dropped instead of
@@ -48,6 +52,15 @@ static uint8_t batteryState = 255;
 
 // Current battery voltage (filtered)
 static float batteryVolts = 4.0;
+
+// Slowly tracked cell voltage that drives the SOC state machine. A transient
+// load (Wi-Fi burst, backlight step) moves the terminal voltage for a second
+// or two, but the state of charge does not change at that pace, so the bars
+// follow this average instead of the display voltage.
+static float batterySlow = 4.0;
+
+// Whether batterySlow holds a real measurement (not the 4.0 V default)
+static bool slowReady = false;
 
 // Last value handed to the display, with hysteresis applied
 static float batteryShown = 0.0;
@@ -144,6 +157,12 @@ float batteryMonitor()
   // Reject impossible readings, keep the previous value
   if(raw < BATT_VALID_MIN || raw > BATT_VALID_MAX) return batteryVolts;
 
+  // With USB connected the pin sits on the load sharing rail at VBUS minus
+  // one diode drop, which says nothing about the cell. Track it in the fast
+  // filter only (the charging indicator keys off it) and freeze the slow SOC
+  // path, so unplugging resumes from the last real cell voltage.
+  bool charging = raw > BATT_USB_THRESHOLD;
+
   if(!batteryReady)
   {
     batteryVolts = raw;
@@ -156,6 +175,21 @@ float batteryMonitor()
     batteryVolts += (raw - batteryVolts) * BATT_FILTER_ALPHA;
   }
 
+  if(charging) return batteryVolts;
+
+  if(!slowReady)
+  {
+    batterySlow = batteryVolts;
+    slowReady = true;
+  }
+  else
+  {
+    // The bars trail the display voltage by design: at this rate the average
+    // needs minutes to cross a level, so neither a load transient nor a
+    // single good/bad measurement can step them.
+    batterySlow += (batteryVolts - batterySlow) * BATT_FILTER_ALPHA_SLOW;
+  }
+
   // State machine
   // SOC (%)      batteryState
   //  0 to 25           0
@@ -165,22 +199,22 @@ float batteryMonitor()
   switch(batteryState)
   {
     case 0:
-      if      (batteryVolts > (BATT_SOC_LEVEL1 + BATT_SOC_HYST_2)) batteryState = 1;   // State 0 > 1
+      if      (batterySlow > (BATT_SOC_LEVEL1 + BATT_SOC_HYST_2)) batteryState = 1;   // State 0 > 1
       break;
     case 1:
-      if      (batteryVolts > (BATT_SOC_LEVEL2 + BATT_SOC_HYST_2)) batteryState = 2;   // State 1 > 2
-      else if (batteryVolts < (BATT_SOC_LEVEL1 - BATT_SOC_HYST_2)) batteryState = 0;   // State 1 > 0
+      if      (batterySlow > (BATT_SOC_LEVEL2 + BATT_SOC_HYST_2)) batteryState = 2;   // State 1 > 2
+      else if (batterySlow < (BATT_SOC_LEVEL1 - BATT_SOC_HYST_2)) batteryState = 0;   // State 1 > 0
       break;
     case 2:
-      if      (batteryVolts > (BATT_SOC_LEVEL3 + BATT_SOC_HYST_2)) batteryState = 3;   // State 2 > 3
-      else if (batteryVolts < (BATT_SOC_LEVEL2 - BATT_SOC_HYST_2)) batteryState = 1;   // State 2 > 1
+      if      (batterySlow > (BATT_SOC_LEVEL3 + BATT_SOC_HYST_2)) batteryState = 3;   // State 2 > 3
+      else if (batterySlow < (BATT_SOC_LEVEL2 - BATT_SOC_HYST_2)) batteryState = 1;   // State 2 > 1
       break;
     case 3:
-      if      (batteryVolts < (BATT_SOC_LEVEL3 - BATT_SOC_HYST_2)) batteryState = 2;   // State 3 > 2
+      if      (batterySlow < (BATT_SOC_LEVEL3 - BATT_SOC_HYST_2)) batteryState = 2;   // State 3 > 2
       break;
     default:
       // First measurement after power on: start where the voltage says we are
-      batteryState = batteryBucket(batteryVolts);
+      batteryState = batteryBucket(batterySlow);
       break;
   }
 

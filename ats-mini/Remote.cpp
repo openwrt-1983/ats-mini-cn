@@ -150,7 +150,9 @@ static void remoteGetMemories(Stream* stream)
 {
   for (uint8_t i = 0; i < getTotalMemories(); i++) {
     const Memory memory = getMemory(i);
-    if (memory.freq) {
+    // Never index the band and mode tables with a stored value without
+    // checking it: an empty or damaged slot may hold anything.
+    if (memory.freq && memory.band < getTotalBands() && memory.mode < getTotalModes()) {
       stream->printf("#%02d,%s,%lu,%s%s%s\r\n", i + 1, bands[memory.band].bandName,
                      (unsigned long)memory.freq, bandModeDesc[memory.mode],
                      memory.name[0] ? "," : "", memory.name);
@@ -202,6 +204,9 @@ static bool remoteSetMemory(Stream* stream, const AdhocCommand& command)
 //
 static void remoteSetColorTheme(Stream* stream, const AdhocCommand& command)
 {
+  // TH expands to theme[themeIdx]: write only through a valid index.
+  if(themeIdx >= getTotalThemes()) return;
+
   memcpy((uint8_t *)&TH + offsetof(ColorTheme, bg), command.theme_words, sizeof(command.theme_words));
   stream->println(" Ok");
   drawScreen();
@@ -431,7 +436,10 @@ static void remoteTickSession(Stream* stream, RemoteState* state)
   {
     const bool report = !state->input.ignoring &&
       (state->input.buffer[0] != '^' || switchThemeEditor());
-    discardFrame(state->input);
+    // The frame ended on a timeout, not on a framing error, so there is no
+    // partial line left to swallow. Dropping into discard mode here would eat
+    // the next command the user sends, all the way to its terminator.
+    reset(state->input);
     if(report) remoteShowError(stream, "Command timed out; send CR or LF to resume");
   }
   if(state->input.length || state->input.discarding || !state->remoteLogOn) return;

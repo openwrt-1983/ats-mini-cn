@@ -439,8 +439,14 @@ static int getLastStep(int mode)
 
 const Step *getCurrentStep()
 {
-  uint8_t idx = bands[bandIdx].currentStepIdx > getLastStep(currentMode) ? defaultStepIdx[currentMode] : bands[bandIdx].currentStepIdx;
-  return(&steps[currentMode][idx]);
+  // Both indexes can come from NVS, so bound them before indexing steps[][]:
+  // a negative step (int8_t) was previously accepted here and read past the
+  // end of the row, and an unknown mode indexed past the mode dimension.
+  uint8_t mode = currentMode < getTotalModes() ? currentMode : FM;
+  int8_t  idx  = bands[bandIdx].currentStepIdx;
+  if(idx < 0 || idx > getLastStep(mode)) idx = defaultStepIdx[mode];
+
+  return(&steps[mode][idx]);
 }
 
 static uint8_t freqInputPos = 0;

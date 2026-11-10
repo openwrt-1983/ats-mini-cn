@@ -181,19 +181,22 @@ String backupBuild()
 
   out += "\n# ---- Wi-Fi 与 Web 登录 ----\n";
   {
-    prefs.begin("network", true, STORAGE_PARTITION);
+    // backupBuild() runs on the web task while the receiver task owns the
+    // global Preferences object, so a private instance is used here.
+    static Preferences backupPrefs;
+    backupPrefs.begin("network", true, STORAGE_PARTITION);
     for(int j = 0; j < 3; j++)
     {
       char key[16];
       snprintf(key, sizeof(key), "network.ssid%d", j + 1);
-      backupValue(out, key, prefs.getString((String("wifissid") + String(j + 1)).c_str(), ""));
+      backupValue(out, key, backupPrefs.getString((String("wifissid") + String(j + 1)).c_str(), ""));
       snprintf(key, sizeof(key), "network.pass%d", j + 1);
-      backupValue(out, key, prefs.getString((String("wifipass") + String(j + 1)).c_str(), ""));
+      backupValue(out, key, backupPrefs.getString((String("wifipass") + String(j + 1)).c_str(), ""));
     }
-    backupLine(out, "network.scanhidden", prefs.getBool("wifiscanhidden", false) ? 1 : 0);
-    backupValue(out, "network.loginusername", prefs.getString("loginusername", ""));
-    backupValue(out, "network.loginpassword", prefs.getString("loginpassword", ""));
-    prefs.end();
+    backupLine(out, "network.scanhidden", backupPrefs.getBool("wifiscanhidden", false) ? 1 : 0);
+    backupValue(out, "network.loginusername", backupPrefs.getString("loginusername", ""));
+    backupValue(out, "network.loginpassword", backupPrefs.getString("loginpassword", ""));
+    backupPrefs.end();
   }
 
   out += "\n# ---- 波段：频率(Hz)|模式|步进|带宽|USB校准|LSB校准 ----\n";
@@ -346,6 +349,16 @@ static bool applyBand(const String &name, const String &value)
   if(values[4] < -MAX_CAL || values[4] > MAX_CAL) return false;
   if(values[5] < -MAX_CAL || values[5] > MAX_CAL) return false;
 
+  // The frequency has to fall inside the band and the modulation has to be one
+  // the band can receive. Without this a hand-edited backup file puts an
+  // impossible tuning state into the band table, and the receiver is handed it
+  // on the next band switch.
+  Memory probe = {};
+  probe.freq = values[0];
+  probe.band = index;
+  probe.mode = values[1];
+  if(!isMemoryInBand(&bands[index], &probe)) return false;
+
   Band &band = bands[index];
   band.currentFreq    = values[0];
   band.bandMode       = values[1];
@@ -369,6 +382,13 @@ static bool applyVfo(const String &name, const String &value)
   if(values[2] < 0 || values[2] > getTotalModes() - 1) return false;
   if(values[3] < 0 || values[3] > 31) return false;
   if(values[4] < 0 || values[4] > 15) return false;
+
+  // Same rule as for a band: the stored VFO must be a receivable combination.
+  Memory probe = {};
+  probe.freq = values[0];
+  probe.band = values[1];
+  probe.mode = values[2];
+  if(probe.freq && !isMemoryInBand(&bands[probe.band], &probe)) return false;
 
   vfos[index].freq         = values[0];
   vfos[index].band         = values[1];
@@ -416,6 +436,10 @@ static bool applyMemory(const String &name, const String &value)
   }
   text[used] = '\0';
   memcpy(mem.name, text, used + 1);
+
+  // A slot that cannot be received is not imported: tuning to it would either
+  // be refused at recall time or send an unknown mode to the receiver.
+  if(mem.freq && !isMemoryInBand(&bands[mem.band], &mem)) return false;
 
   setMemory(index, mem);
   return true;

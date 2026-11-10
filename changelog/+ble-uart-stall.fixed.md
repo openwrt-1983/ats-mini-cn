@@ -1,0 +1,1 @@
+The Bluetooth serial link no longer hangs the receiver when a connected phone stops acknowledging data, no longer sends a stray NUL byte for an empty message, and drops a whole command when its receive buffer is full rather than passing on a truncated one.
