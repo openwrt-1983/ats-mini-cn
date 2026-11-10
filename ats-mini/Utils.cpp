@@ -157,19 +157,50 @@ void touchActivity()
   standbyTimerRestart();
 }
 
-static void holdOutputLow(int pin)
+// Drive a rail low for the whole deep sleep. The digital domain is powered
+// down, so a pin left on the digital mux loses its configuration and floats:
+// it has to be routed to the RTC IO mux, which keeps its own configuration and
+// keeps driving the pad while the rest of the chip is off.
+//
+// Note what is deliberately NOT used here: gpio_hold_en()/gpio_deep_sleep_hold
+// _en(). On the S3 the only hold available is RTC_CNTL_DG_PAD_AUTOHOLD_EN, and
+// it holds *every* digital pad at the level it had when the chip went down --
+// including the encoder button input, frozen at its released (high) level. The
+// ext0 wake source could then never see a press again.
+static void railOutputLow(int pin)
 {
   if(pin < 0) return;
   pinMode(pin, OUTPUT);
   digitalWrite(pin, LOW);
-  gpio_hold_en((gpio_num_t)pin);
+  // Not an RTC capable pad (e.g. the backlight on GPIO38): nothing more can be
+  // done, it goes down with the digital domain.
+  if(rtc_io_number_get((gpio_num_t)pin) < 0) return;
+  rtc_gpio_init((gpio_num_t)pin);
+  rtc_gpio_pullup_dis((gpio_num_t)pin);
+  rtc_gpio_pulldown_dis((gpio_num_t)pin);
+  rtc_gpio_set_level((gpio_num_t)pin, 0);
+  rtc_gpio_set_direction((gpio_num_t)pin, RTC_GPIO_MODE_OUTPUT_ONLY);
 }
 
-// How long the wake press must still be held once setup() runs. The press
-// itself starts a few hundred milliseconds earlier (boot loader, PSRAM, flash),
-// so this lands the whole gesture at about the two seconds the unit uses to
-// go to standby.
-#define STANDBY_WAKE_HOLD_MS 1200
+// Hand the rails back to the digital domain after a deep sleep: the RTC IO mux
+// keeps its routing across the wake, so setup() could not drive them otherwise.
+static void railsRelease()
+{
+  gpio_deep_sleep_hold_dis();  // clears a hold left by a firmware that used it
+  if(PIN_AMP_EN >= 0) rtc_gpio_deinit((gpio_num_t)PIN_AMP_EN);
+  rtc_gpio_deinit((gpio_num_t)PIN_POWER_ON);
+}
+
+// How long the wake press must still be held once setup() runs. Only a guard
+// against contact bounce and a brief knock on the knob: the press itself
+// already started before the boot loader, so any deliberate hold passes.
+#define STANDBY_WAKE_HOLD_MS 400
+
+// Upper bound for letting the standby long press end before the wake source is
+// armed. A pad that somehow stays low must not leave the unit spinning here
+// with the screen already dark: that looks exactly like a receiver that sleeps
+// and then ignores every further press.
+#define STANDBY_RELEASE_TIMEOUT_MS 3000
 
 // Deep sleep is the lowest power state the unit has: the CPU stops, the
 // backlight, amplifier and receiver supply are held low, and the SI4732 is
@@ -194,23 +225,26 @@ static void deepSleepEnter(bool wakeOnButton)
 
   // Keep the receiver supply, amplifier, and backlight off in deep sleep.
   ledcDetach(PIN_LCD_BL);
-  holdOutputLow(PIN_LCD_BL);
-  holdOutputLow(PIN_AMP_EN);
-  holdOutputLow(PIN_POWER_ON);
-  gpio_deep_sleep_hold_en();
+  railOutputLow(PIN_LCD_BL);
+  railOutputLow(PIN_AMP_EN);
+  railOutputLow(PIN_POWER_ON);
 
   // Discard any pending light-sleep timer wake.
   esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_ALL);
 
-  pinMode(ENCODER_PUSH_BUTTON, INPUT);
-  pinMode(ENCODER_PIN_A, INPUT);
-  pinMode(ENCODER_PIN_B, INPUT);
+  // INPUT_PULLUP, not INPUT: plain INPUT drops the internal pull-up that
+  // setup() installed, and a floating encoder pin can read low forever.
+  pinMode(ENCODER_PUSH_BUTTON, INPUT_PULLUP);
+  pinMode(ENCODER_PIN_A, INPUT_PULLUP);
+  pinMode(ENCODER_PIN_B, INPUT_PULLUP);
 
   if(wakeOnButton)
   {
     // The wake level is "button down", and the long press that got us here is
-    // still held: let it end, or the chip would wake up on the spot.
-    while(digitalRead(ENCODER_PUSH_BUTTON) == LOW) delay(20);
+    // still held: let it end, or the chip would wake up on the spot. Bounded,
+    // so a stuck-low reading cannot trap the unit before ext0 is armed.
+    uint32_t released = millis();
+    while(digitalRead(ENCODER_PUSH_BUTTON) == LOW && millis() - released < STANDBY_RELEASE_TIMEOUT_MS) delay(10);
     delay(50); // Debounce margin, so a bouncing release is not a new press.
     esp_sleep_enable_ext0_wakeup((gpio_num_t)ENCODER_PUSH_BUTTON, 0);
     // The digital domain is off in deep sleep, so the pin needs the RTC
@@ -247,22 +281,22 @@ void standbySleepEnter()
 }
 
 //
-// True when the unit was woken from standby. Deep sleep leaves the supply pins
-// held low, so the holds are dropped here -- before setup() configures any pin.
+// True when the unit was woken from standby. The rails were driven through the
+// RTC IO mux while the chip was down, so they are handed back to the digital
+// domain here -- before setup() configures any pin.
 //
 bool standbyWoke()
 {
-  gpio_deep_sleep_hold_dis();
+  railsRelease();
   return esp_sleep_get_wakeup_cause() == ESP_SLEEP_WAKEUP_EXT0;
 }
 
 //
 // The wake press started before setup() runs (boot loader, PSRAM and flash
 // init take a few hundred milliseconds), so the button is already down here.
-// Staying on requires it to still be down after STANDBY_WAKE_HOLD_MS, which
-// together with the boot time makes the wake gesture roughly the same two
-// second press that puts the unit to sleep. A brush against the knob goes
-// straight back to standby instead of powering the receiver up for a moment.
+// Keeping it down for STANDBY_WAKE_HOLD_MS more separates a deliberate press
+// from a knock against the knob; the time already spent booting counts towards
+// the gesture, so a two second press is never rejected on slow boots.
 // When the press was too short this does not return.
 //
 void standbyWakeConfirm()

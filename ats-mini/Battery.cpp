@@ -15,7 +15,10 @@
 //
 // So the pin sees VBAT / 2 and the firmware has to multiply back by (R8+R10)/R10.
 //
-#define BATT_DIVIDER         2.0f   // (R8 + R10) / R10
+// The nominal ratio is 2.0, but the divider resistors, the ADC and the cell
+// protection circuit all shift the result, so the factor is calibrated against
+// a meter on the real board: 1.83.
+#define BATT_DIVIDER         1.83f  // Calibrated (R8 + R10) / R10
 #define BATT_ADC_READS         12   // Samples per measurement (must be <= 32)
 #define BATT_ADC_WARMUP         2   // First samples after the channel switch are junk
 #define BATT_ADC_TRIMMED        2   // Drop this many lowest and highest samples
@@ -37,13 +40,16 @@
 #define BATT_SOC_LEVEL3      4.000  // Battery SOC voltage for 75%
 #define BATT_SOC_HYST_2      0.030  // Battery SOC hyteresis voltage divided by 2
 
-// A single 18650 never reads outside this window. Anything else means the ADC
-// is not connected/not settled yet, so the reading is dropped instead of
-// being displayed as a plausible but wrong voltage.
-#define BATT_VALID_MIN       2.000f
-#define BATT_VALID_MAX       5.200f
+// A single cell never reads outside this window at the ADC pin. Anything else
+// means the ADC is not connected/not settled yet, so the reading is dropped
+// instead of being displayed as a plausible but wrong voltage.
+#define BATT_VALID_MIN       1.000f
+#define BATT_VALID_MAX       2.600f
 
-// USB present: VBUS minus the diode drop in the load sharing circuit.
+// USB present: with the load sharing circuit VBUS minus one diode drop sits on
+// the cell rail, well above what a single Li-ion cell can reach. The test is
+// done on the battery scale (after the divider factor), so a full cell cannot
+// be mistaken for a charging one.
 #define BATT_USB_THRESHOLD   4.300f
 
 // State machine used for battery state of charge (SOC) detection with
@@ -65,6 +71,9 @@ static bool slowReady = false;
 // Last value handed to the display, with hysteresis applied
 static float batteryShown = 0.0;
 
+// Whether the USB supply is present (charging indicator)
+static bool batteryUsb = false;
+
 // Measurement state
 static bool     batteryReady = false;
 static uint32_t batteryLastMs = 0;
@@ -83,7 +92,7 @@ static uint8_t batteryBucket(float volts)
 }
 
 //
-// One calibrated measurement: average of the middle samples, outliers dropped.
+// One calibrated measurement, in volts at the ADC pin (before the divider).
 //
 static float batteryReadOnce()
 {
@@ -121,7 +130,7 @@ static float batteryReadOnce()
   uint8_t  lo = BATT_ADC_TRIMMED, hi = n - BATT_ADC_TRIMMED;
   for(i = lo; i < hi; i++) sum += mv[i];
 
-  return ((float)sum / (float)(hi - lo)) * BATT_DIVIDER / 1000.0f;
+  return ((float)sum / (float)(hi - lo)) / 1000.0f;
 }
 
 //
@@ -152,16 +161,20 @@ float batteryMonitor()
 
   batteryLastMs = now;
 
-  float raw = batteryReadOnce();
+  float pin = batteryReadOnce();
 
   // Reject impossible readings, keep the previous value
-  if(raw < BATT_VALID_MIN || raw > BATT_VALID_MAX) return batteryVolts;
+  if(pin < BATT_VALID_MIN || pin > BATT_VALID_MAX) return batteryVolts;
 
-  // With USB connected the pin sits on the load sharing rail at VBUS minus
-  // one diode drop, which says nothing about the cell. Track it in the fast
-  // filter only (the charging indicator keys off it) and freeze the slow SOC
-  // path, so unplugging resumes from the last real cell voltage.
+  // Cell voltage, i.e. the ADC pin multiplied back by the divider ratio.
+  float raw = pin * BATT_DIVIDER;
+
+  // With USB connected the rail is VBUS minus one diode drop, which says
+  // nothing about the cell. Track it in the fast filter only (the charging
+  // indicator keys off it) and freeze the slow SOC path, so unplugging resumes
+  // from the last real cell voltage.
   bool charging = raw > BATT_USB_THRESHOLD;
+  batteryUsb = charging;
 
   if(!batteryReady)
   {
@@ -250,8 +263,8 @@ bool drawBattery(int x, int y)
 
   // The hardware has a load sharing circuit to allow simultaneous charge and power
   // With USB(5V) connected the voltage reading will be approx. VBUS - Diode Drop = 4.65V
-  // If the average voltage is greater than 4.3V, show ligtning on the display
-  if(batteryVolts > BATT_USB_THRESHOLD)
+  // If the measured cell voltage is greater than 4.3V, show ligtning on the display
+  if(batteryUsb || (switchThemeEditor() && batteryState >= 4))
   {
     // Charging: the cell is being topped up, so it is by definition full enough
     batteryState = 3;
