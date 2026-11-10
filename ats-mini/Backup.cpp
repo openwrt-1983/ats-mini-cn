@@ -253,7 +253,8 @@ String backupBuild()
     memset(name, 0, sizeof(name));
     memcpy(name, mem.name, sizeof(mem.name));
 
-    char key[16];
+    // "memory." + up to 10 digits + NUL: 16 bytes is one short, and gcc says so.
+    char key[24];
     snprintf(key, sizeof(key), "memory.%d", i);
     out += key;
     out += '=';

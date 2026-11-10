@@ -101,6 +101,21 @@
 - Wi-Fi 配置页的「编码器半步解码」开关改的是同一个设置，两边等价
 - 若换用其它定位点数的编码器，可先试两档中更跟手的一档；仍不跟手请反馈定位点数
 
+### 6. 收容 SI4732 驱动补丁
+
+上游固件把驱动加固全部写在 `SI4735-fixed.h` 里，改一处要在固件和库之间来回对照。
+本仓库把这份加固（总线超时、有界重试、SEEK 只下发一次并补 CANCEL）下沉到库本体，
+整份库以 `ats-mini/libraries/SI4732/` 内置在仓库里，来源是
+[openwrt-1983/SI4732](https://github.com/openwrt-1983/SI4732)（`2.1.8-fix1`）。
+
+- `SI4735-fixed.h` 现在只保留固件真正需要覆盖的部分（RDS 文本轮询、立体声开关、UTC 时间读取），
+  不再重复实现 `seekStationProgress()`：库版本同样是「只发一次 SEEK、总线失效即返回、超时补 CANCEL」，
+  而且用户松开旋钮时会主动中止搜索，比本地重写更完整。
+- `getRdsStatus()` 的本地版本继续保留，但改成有界重试 + `busTimeout` 提前退出，并且保留
+  `si47x_rds_command command = {}` —— 库版本的命令结构体有五个保留位没初始化，是栈上的随机值。
+- 效果是 I2C 掉线（待机断电、补丁重载失败、线缆接触不良）不再把主循环卡死在
+  `do { ... } while (ERR)` 里，界面停在上一屏读数而不是闪 `0xFFFF`。
+
 ## 编译
 
 依赖（Arduino IDE 或 arduino-cli）：
@@ -109,16 +124,21 @@
 |---|---|
 | ESP32 Arduino Core | 3.3.12 |
 | LovyanGFX | 1.2.33 |
-| PU2CLR SI4735 | 2.1.8 |
 | Async TCP | 3.5.0 |
 | ESP Async WebServer | 3.12.1 |
+| SI4732 驱动 | 内置，`ats-mini/libraries/SI4732`（`2.1.8-fix1`） |
 
 ```bash
-cd ats-mini
-arduino-cli compile --profile esp32s3-ospi --export-binaries .
-# 或 QSPI 版本
-arduino-cli compile --profile esp32s3-qspi --export-binaries .
+./build.sh
 ```
+
+`build.sh` 固定了和上游 profile 完全一致的板级参数（含 `CPUFreq=80`），并用 `--library`
+把内置的 SI4732 指为最高优先级。
+
+> **不要用 `--profile` 编译。** arduino-cli 的 profile 模式会忽略 sketch 目录下的 `libraries/`，
+> 强制安装 profile 里列的库；fork 和官方 PU2CLR 都提供 `SI4735.h`，profile 一定选到官方
+> 2.1.8，而 `SI4735-fixed.h` 依赖 fork 的 `busTimeout`，编译直接失败。原来的 `sketch.yaml`
+> 因此改名为 `sketch.yaml.disabled`，`build.sh` 会在它被误改回来时直接报错退出。
 
 > 若出现内存不足或中断，请把 `TMPDIR` 指到大容量磁盘目录再编译。
 

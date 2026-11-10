@@ -85,6 +85,9 @@ class SI4735_fixed: public SI4735
       }
 
       waitToSend();
+      // The bus is gone (tuner powered down during standby): report it and
+      // leave the last good RDS status alone instead of spinning.
+      if(busTimeout) return;
 
       command.arg.INTACK = INTACK;
       command.arg.MTFIFO = MTFIFO;
@@ -93,16 +96,35 @@ class SI4735_fixed: public SI4735
       Wire.beginTransmission(deviceAddress);
       Wire.write(FM_RDS_STATUS);
       Wire.write(command.raw);
-      Wire.endTransmission();
+      if(Wire.endTransmission() != 0)
+      {
+        busTimeout = true;
+        return;
+      }
 
-      do
+      // RDS runs from loop() while RDS is enabled, so this read needs the same
+      // bound as getStatus(): a dead bus fills the buffer with 0xFF and keeps
+      // the ERR bit set forever.
+      for(uint8_t attempt=0 ; attempt<STATUS_READ_ATTEMPTS ; attempt++)
       {
         waitToSend();
-        Wire.requestFrom(deviceAddress, 13);
+        if(busTimeout) return;
+
+        if(Wire.requestFrom((uint8_t)deviceAddress, (uint8_t)13) != 13)
+          continue;
+
         for(uint8_t i=0 ; i<13 ; i++)
           currentRdsStatus.raw[i] = Wire.read();
-      } while(currentRdsStatus.resp.ERR);
-      delayMicroseconds(550);
+
+        if(currentRdsStatus.resp.ERR)
+          continue;
+
+        delayMicroseconds(550);
+        busTimeout = false;
+        return;
+      }
+
+      busTimeout = true;
     }
 
     // Clear stale SSB sideband bits before the first FM tune
@@ -261,32 +283,9 @@ class SI4735_fixed: public SI4735
       return(true);
     }
 
-  void seekStationProgress(void (*showFunc)(uint16_t f), bool (*stopSeeking)(), uint8_t up_down)
-  {
-    si47x_frequency freq;
-    long elapsed_seek = millis();
-
-    // seek command does not work for SSB
-    if (lastMode == SSB_CURRENT_MODE)
-      return;
-
-    seekStation(up_down, 0);
-    do
-    {
-      delay(maxDelaySetFrequency);
-      getStatus(0, 0);
-      delay(maxDelaySetFrequency);
-      freq.raw.FREQH = currentStatus.resp.READFREQH;
-      freq.raw.FREQL = currentStatus.resp.READFREQL;
-      currentWorkFrequency = freq.value;
-      if (showFunc != NULL)
-        showFunc(freq.value);
-      if (stopSeeking != NULL)
-        if (stopSeeking())
-          return;
-
-    } while (!currentStatus.resp.VALID && !currentStatus.resp.BLTF && (millis() - elapsed_seek) < maxSeekTime);
-  }
+    // seekStationProgress() is no longer overridden here: the SI4732 library
+    // already issues one SEEK, bails out on a dead bus and cancels the seek
+    // when stopSeeking() returns true, so the base implementation is used.
 
 #if 0
     // Speeding up SI4735::downloadPatch() function
