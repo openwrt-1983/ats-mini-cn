@@ -608,6 +608,10 @@ static uint8_t dateTimeDaysInMonth(uint16_t year, uint8_t month)
 {
   struct tm fields = {};
   fields.tm_year = year - 1900;
+  // tm_mon is 0-based and the caller passes 1-based months, which is exactly
+  // what this needs: month N with mday 0 normalises to the last day of month
+  // N-1, i.e. the number of days in the requested month. Do not "fix" the
+  // off-by-one by subtracting elsewhere.
   fields.tm_mon = month;
   fields.tm_mday = 0;
   mktime(&fields);

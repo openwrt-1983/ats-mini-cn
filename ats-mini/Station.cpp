@@ -318,8 +318,11 @@ static const char *findScheduleByFreq(uint16_t freq, bool periodic)
     }
   }
 
-  // Try new EIBI lookup if not found or once per minute
-  if(!periodic || (!entry && last_offset != (size_t)-1) || last_minute != minute)
+  // Try new EIBI lookup if not found, when the frequency changed, or once per
+  // minute. The frequency term matters for the callers that are not the
+  // periodic refresh (doSeek, the remote command): they enter with a different
+  // frequency while the cached offsets still belong to the previous one.
+  if(!periodic || freq != last_freq || (!entry && last_offset != (size_t)-1) || last_minute != minute)
   {
     last_freq = freq;
     last_minute = minute;

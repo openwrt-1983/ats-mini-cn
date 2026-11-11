@@ -1,4 +1,5 @@
 #include "Common.h"
+#include "Draw.h"
 #include "Utils.h"
 #include "Menu.h"
 
@@ -128,6 +129,17 @@ static bool scanTickTime()
     scanStatus = SCAN_DONE;
   else
     rx.setFrequency(freqFromHz(freq, currentMode)); // Implies tuning delay
+
+  // The scan holds the main loop for several seconds, so report how far it got
+  // instead of leaving a message that never changes (which reads as a hang).
+  // Every 20th point is enough: each update repaints the whole screen.
+  if(scanStatus == SCAN_RUN && !(scanCount % 20))
+  {
+    char progress[24];
+    // Two CJK glyphs plus a percentage: stays inside the 152 px message box.
+    snprintf(progress, sizeof(progress), "扫频 %u%%", (unsigned)(scanCount * 100 / SCAN_POINTS));
+    drawMessage(progress);
+  }
 
   // Save last scan time
   scanTime = millis() - SCAN_POLL_TIME;

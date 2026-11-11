@@ -366,7 +366,7 @@ void prefsSave(uint32_t items)
       prefsSaveBand(bandIdx, false);
 
     // Startup may save defaults before the receiver is ready to capture.
-    if(vfoInitialized) vfos[vfoIdx] = captureVfo();
+    if(vfoInitialized && vfoIdx < ITEM_COUNT(vfos)) vfos[vfoIdx] = captureVfo();
     prefs.putBytes("VFOSlots", vfos, sizeof(vfos));
     prefs.putUChar("VFOActive", vfoIdx);
     prefs.end();
@@ -475,7 +475,14 @@ bool prefsLoad(uint32_t items)
 
     if(prefs.getBytesLength("VFOSlots")==sizeof(vfos) &&
        prefs.getBytes("VFOSlots", vfos, sizeof(vfos))==sizeof(vfos))
+    {
+      // The saved index is used as an array subscript in prefsSave() and
+      // restoreVfo(), so it has to be in range before it is trusted. A slot
+      // pair written by an older layout, or a half-erased namespace, can hold
+      // any byte value here.
       vfoIdx = prefs.getUChar("VFOActive", 0);
+      if(vfoIdx >= ITEM_COUNT(vfos)) vfoIdx = 0;
+    }
     else
       vfos[0] = vfos[1] = {};
 
@@ -521,26 +528,30 @@ bool diskInit(bool force)
     prefs.end();
   }
 
-  if(force)
-  {
-    LittleFS.end();
-    LittleFS.format();
-  }
+  if(force) LittleFS.end();
 
-  bool mounted = LittleFS.begin(false, "/littlefs", 10, "littlefs");
+  // formatOnFail = force: after a factory reset or a storage version bump the
+  // partition holds no filesystem yet. The library formats only after the mount
+  // failed, and LittleFSFS::format() uses the partition label that begin()
+  // installs -- calling format() before begin() would run it with that label
+  // still unset and format the wrong partition (or nothing at all).
+  bool mounted = LittleFS.begin(force, "/littlefs", 10, "littlefs");
 
-  if(!mounted)
+  if(!mounted && !force)
   {
+    // The image exists but cannot be read (power loss during a write, damaged
+    // table). Rebuild it once instead of booting without a filesystem.
     if(!LittleFS.format())
     {
       return(false);
     }
 
     mounted = LittleFS.begin(false, "/littlefs", 10, "littlefs");
-    if(!mounted)
-    {
-      return(false);
-    }
+  }
+
+  if(!mounted)
+  {
+    return(false);
   }
 
   prefs.begin("storage", false, STORAGE_PARTITION);

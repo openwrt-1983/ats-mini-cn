@@ -1,0 +1,1 @@
+The band scan shows its progress while it runs. The scan blocks the main loop for several seconds and used to display a single unchanging message for the whole sweep, which was indistinguishable from a hang; the message now reports the percentage completed.

@@ -26,7 +26,7 @@ static const char pageConfig[] PROGMEM = R"HTML(<H1>{{title}}</H1>
     <TR><TD CLASS="LABEL">背光亮度</TD><TD><INPUT TYPE="NUMBER" NAME="brightness" MIN="10" MAX="255" STEP="5" VALUE="{{brightness}}" REQUIRED></TD></TR>
     <TR><TD CLASS="LABEL">休眠定时</TD><TD><INPUT TYPE="NUMBER" NAME="sleeptimer" MIN="0" MAX="255" STEP="5" VALUE="{{sleep_timer}}" REQUIRED><BR><SMALL>单位秒；0 表示不自动休眠</SMALL></TD></TR>
     <TR><TD CLASS="LABEL">休眠方式</TD><TD><SELECT NAME="sleepmode">{{{sleep_options}}}</SELECT></TD></TR>
-    <TR><TD CLASS="LABEL">关机定时</TD><TD><INPUT TYPE="NUMBER" NAME="offtimer" MIN="0" MAX="240" STEP="5" VALUE="{{off_timer}}" REQUIRED><BR><SMALL>单位分钟；0 表示不自动关机。修改后会重新计时。</SMALL></TD></TR>
+    <TR><TD CLASS="LABEL">关机定时</TD><TD><INPUT TYPE="NUMBER" NAME="offtimer" MIN="0" MAX="240" STEP="5" VALUE="{{off_timer}}" REQUIRED><BR><SMALL>单位分钟；0 表示不自动关机。修改后会重新计时。到点进入与长按旋钮相同的深睡，长按旋钮即可唤醒继续收听；定时只用一次</SMALL></TD></TR>
     <TR><TH COLSPAN="2" CLASS="HEADING">连接</TH></TR>
     <TR><TD CLASS="LABEL">USB 模式</TD><TD><SELECT NAME="usbmode">{{{usb_options}}}</SELECT></TD></TR>
     <TR><TD CLASS="LABEL">TCP Mode</TD><TD><SELECT NAME="tcpmode">{{{tcp_options}}}</SELECT><BR><SMALL>监听 60000 端口；需要 Wi-Fi</SMALL></TD></TR>

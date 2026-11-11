@@ -167,14 +167,18 @@ static bool remoteSetMemory(Stream* stream, const AdhocCommand& command)
     return remoteShowError(stream, "Invalid memory slot number");
 
   Memory mem = getMemory(slot - 1);
-  mem.mode = 15;
+  // Tracked with a flag, not a magic mode index: "15" only means "not found"
+  // as long as the mode table stays below 16 entries, and a sentinel that
+  // collides with a real value fails silently once it grows.
+  bool modeKnown = false;
   for (int i = 0; i < getTotalModes(); i++) {
     if (strcmp(bandModeDesc[i], command.mode) == 0) {
       mem.mode = i;
+      modeKnown = true;
       break;
     }
   }
-  if (mem.mode == 15)
+  if (!modeKnown)
     return remoteShowError(stream, "No such mode");
 
   mem.freq = command.frequency;

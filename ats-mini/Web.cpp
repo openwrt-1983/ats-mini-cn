@@ -119,6 +119,75 @@ static bool webIsAuthenticated(AsyncWebServerRequest *request)
   return(user == "" || pass == "" || request->authenticate(user.c_str(), pass.c_str()));
 }
 
+// Keep in sync with MDNS.begin() in Network.cpp.
+#define WEB_MDNS_HOST "atsmini"
+
+// Extract the host part of an Origin/Referer value ("http://user@host:port/x").
+// Returns an empty string when the value cannot be parsed.
+static String webHeaderHost(const String &value)
+{
+  int scheme = value.indexOf("://");
+  if(scheme < 0) return "";
+
+  int start = scheme + 3;
+  int end = value.indexOf('/', start);
+  if(end < 0) end = value.length();
+  String authority = value.substring(start, end);
+
+  int at = authority.lastIndexOf('@');
+  if(at >= 0) authority = authority.substring(at + 1);
+
+  // Literal IPv6 address, optionally with a port.
+  if(authority.startsWith("["))
+  {
+    int close = authority.indexOf(']');
+    return close > 1 ? authority.substring(1, close) : "";
+  }
+
+  int colon = authority.indexOf(':');
+  if(colon >= 0) authority = authority.substring(0, colon);
+  return authority;
+}
+
+// Browsers attach the stored Basic credentials to a cross-site form post, so
+// authentication alone does not stop a page served from another host from
+// driving the receiver (changing settings, uploading a firmware image). Reject
+// a write whose Origin/Referer names a different host. Requests carrying
+// neither header -- curl, the app, command line tools -- are allowed, because
+// those clients cannot be confused into sending someone else's request.
+static bool webIsSameOrigin(AsyncWebServerRequest *request)
+{
+  const AsyncWebHeader *header = request->getHeader("Origin");
+  if(!header) header = request->getHeader("Referer");
+  if(!header) return true;
+
+  String host = webHeaderHost(header->value());
+  if(!host.length()) return true;
+
+  if(host == WiFi.localIP().toString()) return true;
+  if(host == WiFi.softAPIP().toString()) return true;
+
+  String name = host;
+  if(name.endsWith(".local")) name = name.substring(0, name.length() - 6);
+  return(name.equalsIgnoreCase(WEB_MDNS_HOST));
+}
+
+// Gate for every handler that changes state: authentication plus the
+// cross-origin check above. Sends the refusal itself and returns false.
+static bool webAllowWrite(AsyncWebServerRequest *request)
+{
+  if(!webIsAuthenticated(request))
+  {
+    request->requestAuthentication();
+    return false;
+  }
+
+  if(webIsSameOrigin(request)) return true;
+
+  request->send(403, "text/plain", "Cross-origin request rejected.");
+  return false;
+}
+
 // One download owns the PSRAM buffer until completion, disconnect, or failure.
 static struct
 {
@@ -264,6 +333,9 @@ void webInit()
   initialized = true;
 
   server.on("/", HTTP_ANY, [] (AsyncWebServerRequest *request) {
+    // The status page carries the receiver IP, MAC, SSID and firmware version,
+    // so it must not be readable without the same credentials as /config.
+    if(!webIsAuthenticated(request)) return request->requestAuthentication();
     request->send(200, "text/html", webRadioPage());
   });
 
@@ -302,6 +374,7 @@ void webInit()
   });
 
   server.on("/splash.png", HTTP_GET, [] (AsyncWebServerRequest *request) {
+    if(!webIsAuthenticated(request)) return request->requestAuthentication();
     if(!LittleFS.exists(SPLASH_PATH))
       return request->send(404, "text/plain", "Not found");
     request->send(LittleFS, SPLASH_PATH, "image/png");
@@ -326,7 +399,7 @@ void webInit()
     webUpdatePage(request, otaStatus(), 200);
   });
   server.on("/update", HTTP_POST, [](AsyncWebServerRequest *request) {
-    if(!webIsAuthenticated(request)) return request->requestAuthentication();
+    if(!webAllowWrite(request)) return;
     if(!otaRequestLatest(request->hasParam("action", true) && request->getParam("action", true)->value() == "install"))
       return webUpdatePage(request, {OTA_FAILED, "已有升级正在进行。"}, 409);
     request->redirect("/update");
@@ -342,7 +415,8 @@ void webInit()
 static void webUploadFirmware(AsyncWebServerRequest *request, const String &filename,
                               size_t index, uint8_t *data, size_t len, bool)
 {
-  if(!webIsAuthenticated(request) || request->getResponse()) return;
+  if(request->getResponse()) return;
+  if(!webAllowWrite(request)) return;
 
   if(!index)
   {
@@ -365,7 +439,7 @@ static void webUploadFirmware(AsyncWebServerRequest *request, const String &file
 
 static void webUploadFirmwareComplete(AsyncWebServerRequest *request)
 {
-  if(!webIsAuthenticated(request)) return request->requestAuthentication();
+  if(!webAllowWrite(request)) return;
   if(request->getResponse()) return; // Preserve an upload error queued above.
   if(!request->hasParam("firmware", true, true))
     return webUpdatePage(request, {OTA_FAILED, "未上传完整固件。"});
@@ -376,7 +450,10 @@ static void webUploadFirmwareComplete(AsyncWebServerRequest *request)
 static void webUploadSplash(AsyncWebServerRequest *request, const String &filename,
                             size_t index, uint8_t *data, size_t len, bool final)
 {
-  if(!webIsAuthenticated(request)) return;
+  // Same short-circuit as the other upload bodies: once a refusal or an error
+  // page is queued, the remaining chunks must not touch LittleFS.
+  if(request->getResponse()) return;
+  if(!webAllowWrite(request)) return;
 
   if(index == 0)
   {
@@ -403,6 +480,10 @@ static void webUploadSplash(AsyncWebServerRequest *request, const String &filena
   }
 
   SplashUploadState *state = static_cast<SplashUploadState *>(request->_tempObject);
+  // No context means the first chunk could not allocate one (or a non-.png
+  // upload created none); there is nothing to track, and writing without it
+  // would dereference a null pointer.
+  if(!state) return;
 
   if(request->_tempFile && len)
   {
@@ -456,7 +537,8 @@ static void webBackupDownload(AsyncWebServerRequest *request)
 static void webUploadBackup(AsyncWebServerRequest *request, const String &,
                             size_t index, uint8_t *data, size_t len, bool final)
 {
-  if(!webIsAuthenticated(request) || request->getResponse()) return;
+  if(request->getResponse()) return;
+  if(!webAllowWrite(request)) return;
 
   if(index == 0)
   {
@@ -506,7 +588,7 @@ static void webUploadBackup(AsyncWebServerRequest *request, const String &,
 
 static void webRestoreComplete(AsyncWebServerRequest *request)
 {
-  if(!webIsAuthenticated(request)) return request->requestAuthentication();
+  if(!webAllowWrite(request)) return;
   if(request->getResponse()) return;
 
   BackupUploadState *state = static_cast<BackupUploadState *>(request->_tempObject);
@@ -572,7 +654,7 @@ static bool webConfigNumber(AsyncWebServerRequest *request, const char *name, in
 
 void webSetConfig(AsyncWebServerRequest *request)
 {
-  if(!webIsAuthenticated(request)) return request->requestAuthentication();
+  if(!webAllowWrite(request)) return;
 
   int layout, region, stereo, brightness, sleepTimer, sleepMode, offTimer;
   int usbMode, tcpMode, bleMode, rds;
@@ -683,11 +765,34 @@ void webSetConfig(AsyncWebServerRequest *request)
 
 static void webSetWiFi(AsyncWebServerRequest *request)
 {
-  if(!webIsAuthenticated(request)) return request->requestAuthentication();
+  if(!webAllowWrite(request)) return;
 
   int wifiMode;
   if(!webConfigNumber(request, "wifimode", wifiMode, 0, getTotalWiFiModes() - 1))
     return request->send(400, "text/plain", "Invalid Wi-Fi mode.");
+
+  // Validate every credential before touching NVS: a rejected form must not
+  // leave the earlier entries -- including the login pair below -- already
+  // rewritten.
+  // 802.11 limits: SSID is 0..32 octets (empty clears the slot), a WPA
+  // passphrase is 8..63 or empty for an open network. Without this an
+  // over-long value is stored truncated and the receiver then fails to
+  // associate with a password that still looks correct on the page.
+  for(int j=0 ; j<3 ; j++)
+  {
+    char nameSSID[16], namePASS[16];
+
+    sprintf(nameSSID, "wifissid%d", j+1);
+    sprintf(namePASS, "wifipass%d", j+1);
+
+    if(!request->hasParam(nameSSID, true) || !request->hasParam(namePASS, true)) continue;
+
+    const String &ssid = request->getParam(nameSSID, true)->value();
+    const String &pass = request->getParam(namePASS, true)->value();
+    if(ssid.length() > 32 || pass.length() > 63 || (pass.length() && pass.length() < 8))
+      return request->send(400, "text/plain",
+        "SSID 需为 1-32 字节，密码需为空（开放网络）或 8-63 字节。");
+  }
 
   webPrefs.begin("network", false, STORAGE_PARTITION);
 
@@ -869,7 +974,7 @@ static bool webNameValid(const String &text)
 
 static void webSetMemories(AsyncWebServerRequest *request)
 {
-  if(!webIsAuthenticated(request)) return request->requestAuthentication();
+  if(!webAllowWrite(request)) return;
 
   // Validate a complete replacement before modifying any live slots.
   Memory *pending = static_cast<Memory *>(ps_calloc(getTotalMemories(), sizeof(Memory)));
@@ -1185,7 +1290,8 @@ static PatchUpload *webPatchBegin(AsyncWebServerRequest *request)
 static void webUploadPatch(AsyncWebServerRequest *request, const String &filename,
                            size_t index, uint8_t *data, size_t len, bool final)
 {
-  if(!webIsAuthenticated(request) || request->getResponse()) return;
+  if(request->getResponse()) return;
+  if(!webAllowWrite(request)) return;
   if(filename.isEmpty() && index == 0 && len == 0 && final) return;
   PatchUpload *state = webPatchBegin(request);
   if(!state) return request->send(503, "text/plain", "Not enough memory to process the patch set.");
@@ -1206,7 +1312,7 @@ static void webUploadPatch(AsyncWebServerRequest *request, const String &filenam
 
 static void webPatchesComplete(AsyncWebServerRequest *request)
 {
-  if(!webIsAuthenticated(request)) return request->requestAuthentication();
+  if(!webAllowWrite(request)) return;
   if(request->getResponse()) return;
   if(request->hasParam("delete", true))
   {

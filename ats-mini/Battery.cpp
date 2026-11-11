@@ -18,27 +18,56 @@
 // The nominal ratio is 2.0, but the divider resistors, the ADC and the cell
 // protection circuit all shift the result, so the factor is calibrated against
 // a meter on the real board: 1.83.
+//
+// To recalibrate a unit, measure the cell with a meter while the receiver is
+// idle and set this to 1.83 * (meter volts / displayed volts).
 #define BATT_DIVIDER         1.83f  // Calibrated (R8 + R10) / R10
-#define BATT_ADC_READS         12   // Samples per measurement (must be <= 32)
+// Nine samples go into every measurement: two conversions are burnt after the
+// channel switch, the two lowest and the two highest of the remaining thirteen
+// are dropped, and the middle nine are averaged. Nine averaged samples reject
+// the switching spikes of the backlight and the amplifier that a single
+// conversion follows, and the whole burst is still only ~1.8 ms once per 500 ms,
+// so the encoder (which counts in an interrupt) is not affected.
+#define BATT_ADC_READS         15   // Conversions per measurement (must be <= 32)
 #define BATT_ADC_WARMUP         2   // First samples after the channel switch are junk
 #define BATT_ADC_TRIMMED        2   // Drop this many lowest and highest samples
 // Sampling blocks the main loop, which also polls the rotary encoder, so the
-// whole burst is kept below ~1.5 ms. The divider is only 50k into 10nF
-// (tau = 0.5 ms) and the cell voltage drifts far slower than that, so a long
-// settle time buys nothing here.
+// burst is kept to ~1.8 ms and runs once per BATT_SAMPLE_INTERVAL only. The
+// divider is only 50k into 10nF (tau = 0.5 ms) and the cell voltage drifts far
+// slower than that, so a long settle time buys nothing here.
 #define BATT_ADC_SPACING_US   120
 #define BATT_FILTER_ALPHA    0.30f  // IIR weight of a new measurement (0..1)
 #define BATT_FILTER_ALPHA_SLOW 0.02f  // IIR weight of a new measurement in the slow SOC path (0..1)
 #define BATT_SAMPLE_INTERVAL  500   // ms between real measurements
 #define BATT_DISPLAY_HYST    0.01f  // Volts; keeps the last digit from flickering
 
-// Level thresholds for the four SOC bars, on a realistic Li-ion open circuit
-// voltage curve. The previous values (3.68/3.78/3.88) put a cell at about
-// half charge into the top bucket.
-#define BATT_SOC_LEVEL1      3.740  // Battery SOC voltage for 25%
-#define BATT_SOC_LEVEL2      3.870  // Battery SOC voltage for 50%
-#define BATT_SOC_LEVEL3      4.000  // Battery SOC voltage for 75%
-#define BATT_SOC_HYST_2      0.030  // Battery SOC hyteresis voltage divided by 2
+// The bar has nine levels, i.e. ten states from empty to full, so it moves in
+// ~10% steps instead of the 25% jumps of the old four bucket display.
+#define BATT_SOC_LEVELS        9
+
+// Level thresholds on a realistic Li-ion open circuit curve, in ascending
+// order: battSocLevel[i] is the voltage where level i+1 begins, so the level
+// is the number of thresholds the cell voltage is above. The mid points keep
+// the previous calibration (3.74 V = 25%, 3.87 V = 50%, 4.00 V = 75%), which
+// was measured with the receiver playing rather than at rest.
+static const float battSocLevel[BATT_SOC_LEVELS] =
+{
+  3.620f,  // 10%
+  3.680f,  // 20%
+  3.750f,  // 30%
+  3.810f,  // 40%
+  3.870f,  // 50%
+  3.935f,  // 60%
+  4.000f,  // 70%
+  4.060f,  // 80%
+  4.120f,  // 90%
+};
+
+// Full width of the hysteresis band. A level only changes when the slow average
+// leaves the band around the boundary, i.e. when it is half of this away on
+// either side. The narrowest gap between two thresholds is 60 mV, so the bands
+// of neighbouring levels can never overlap.
+#define BATT_SOC_HYST        0.030
 
 // A single cell never reads outside this window at the ADC pin. Anything else
 // means the ADC is not connected/not settled yet, so the reading is dropped
@@ -79,16 +108,15 @@ static bool     batteryReady = false;
 static uint32_t batteryLastMs = 0;
 
 //
-// Map a voltage to a SOC bucket. Used to seed the state machine so that the
-// very first screen after power on already shows the right number of bars
-// instead of starting in the "0 to 25%" bucket.
+// Map a voltage to a bar level (0..BATT_SOC_LEVELS). Used both by the state
+// machine and to seed it, so that the very first screen after power on already
+// shows the right number of bars instead of starting at empty.
 //
-static uint8_t batteryBucket(float volts)
+static uint8_t batteryLevelFor(float volts)
 {
-  if(volts > BATT_SOC_LEVEL3) return 3;
-  if(volts > BATT_SOC_LEVEL2) return 2;
-  if(volts > BATT_SOC_LEVEL1) return 1;
-  return 0;
+  uint8_t level = 0;
+  while(level < BATT_SOC_LEVELS && volts > battSocLevel[level]) level++;
+  return(level);
 }
 
 //
@@ -114,9 +142,13 @@ static float batteryReadOnce()
     delayMicroseconds(BATT_ADC_SPACING_US);
   }
 
-  if(n < (2 * BATT_ADC_TRIMMED + 1)) return batteryVolts;
+  // Too few usable samples means the burst failed. Report 0 V, the caller's
+  // validity window rejects it: returning the filtered cell voltage here would
+  // mix two scales, because this function answers in volts at the ADC pin.
+  if(n < (2 * BATT_ADC_TRIMMED + 1)) return(0.0f);
 
-  // Insertion sort, the array holds 14 entries at most
+  // Insertion sort, the array holds at most BATT_ADC_READS - BATT_ADC_WARMUP
+  // entries
   for(i = 1; i < n; i++)
   {
     uint32_t key = mv[i];
@@ -147,6 +179,13 @@ float batteryMonitor()
     analogReadResolution(12);
     // 11 dB attenuation is required here: the divider halves the cell, but
     // 4.2 V still arrives as 2.1 V, above the 0 dB / 2.5 dB ranges.
+    //
+    // Both calls are needed. analogSetPinAttenuation() only configures the
+    // hardware range of this channel, while analogReadMilliVolts() builds its
+    // calibration table from the *global* attenuation: with the two out of
+    // step every reading is off by a fixed percentage, which looks exactly like
+    // a miscalibrated divider.
+    analogSetAttenuation(ADC_11db);
     analogSetPinAttenuation(VBAT_MON, ADC_11db);
     adcConfigured = true;
   }
@@ -173,8 +212,10 @@ float batteryMonitor()
   // nothing about the cell. Track it in the fast filter only (the charging
   // indicator keys off it) and freeze the slow SOC path, so unplugging resumes
   // from the last real cell voltage.
+  static bool usbPrev = false;
   bool charging = raw > BATT_USB_THRESHOLD;
-  batteryUsb = charging;
+  bool unplugged = usbPrev && !charging;
+  batteryUsb = usbPrev = charging;
 
   if(!batteryReady)
   {
@@ -190,6 +231,12 @@ float batteryMonitor()
 
   if(charging) return batteryVolts;
 
+  // The first sample after the cable is pulled still carries a batteryVolts
+  // that the fast filter has not brought down from the USB rail yet. Feeding it
+  // to the slow path would nudge the average up by up to a few tens of mV
+  // exactly when the bars must not move; the next sample is 500 ms later.
+  if(unplugged) return batteryVolts;
+
   if(!slowReady)
   {
     batterySlow = batteryVolts;
@@ -203,32 +250,21 @@ float batteryMonitor()
     batterySlow += (batteryVolts - batterySlow) * BATT_FILTER_ALPHA_SLOW;
   }
 
-  // State machine
-  // SOC (%)      batteryState
-  //  0 to 25           0
-  // 25 to 50           1
-  // 50 to 75           2
-  // 75 to 100          3
-  switch(batteryState)
+  // State machine over the nine levels. It moves one level per measurement and
+  // only when the slow average leaves the hysteresis band around the boundary,
+  // so a cell sitting on a threshold cannot make the bar chatter.
+  if(batteryState > BATT_SOC_LEVELS)
   {
-    case 0:
-      if      (batterySlow > (BATT_SOC_LEVEL1 + BATT_SOC_HYST_2)) batteryState = 1;   // State 0 > 1
-      break;
-    case 1:
-      if      (batterySlow > (BATT_SOC_LEVEL2 + BATT_SOC_HYST_2)) batteryState = 2;   // State 1 > 2
-      else if (batterySlow < (BATT_SOC_LEVEL1 - BATT_SOC_HYST_2)) batteryState = 0;   // State 1 > 0
-      break;
-    case 2:
-      if      (batterySlow > (BATT_SOC_LEVEL3 + BATT_SOC_HYST_2)) batteryState = 3;   // State 2 > 3
-      else if (batterySlow < (BATT_SOC_LEVEL2 - BATT_SOC_HYST_2)) batteryState = 1;   // State 2 > 1
-      break;
-    case 3:
-      if      (batterySlow < (BATT_SOC_LEVEL3 - BATT_SOC_HYST_2)) batteryState = 2;   // State 3 > 2
-      break;
-    default:
-      // First measurement after power on: start where the voltage says we are
-      batteryState = batteryBucket(batterySlow);
-      break;
+    // First measurement after power on: start where the voltage says we are
+    batteryState = batteryLevelFor(batterySlow);
+  }
+  else if(batteryState < BATT_SOC_LEVELS && batterySlow > (battSocLevel[batteryState] + BATT_SOC_HYST))
+  {
+    batteryState++;
+  }
+  else if(batteryState > 0 && batterySlow < (battSocLevel[batteryState - 1] - BATT_SOC_HYST))
+  {
+    batteryState--;
   }
 
   // Return current voltage
@@ -254,20 +290,25 @@ bool drawBattery(int x, int y)
   spr.setTextDatum(TR_DATUM);
   spr.setTextColor(TH.batt_voltage);
 
-  if(switchThemeEditor())
-  {
-    // Alternate between five battery states every 10 seconds
-    batteryState = (millis() % 50000u) / 10000u;
-    batteryVolts = batteryState >= 4 ? 4.5 : 4.0;
-  }
+  // Theme editor preview: the nine bar levels plus the charging icon, one every
+  // 5 seconds. Kept in locals so that leaving the editor resumes from the real
+  // measurement: writing the preview into batteryState/batteryVolts parks the
+  // IIR filter and the SOC state machine on 4.5 V, and the bars then read
+  // "full" for a while after.
+  const bool preview = switchThemeEditor();
+  const uint8_t previewSlot = (uint8_t)((millis() % 50000u) / 5000u);
+  const bool shownUsb = batteryUsb || (preview && previewSlot >= BATT_SOC_LEVELS);
+  const uint8_t shownState = preview ? (previewSlot < BATT_SOC_LEVELS ? previewSlot : 0) : batteryState;
+  const float shownVolts = preview ? (shownUsb ? 4.5f : 4.0f) : batteryVolts;
 
   // The hardware has a load sharing circuit to allow simultaneous charge and power
   // With USB(5V) connected the voltage reading will be approx. VBUS - Diode Drop = 4.65V
   // If the measured cell voltage is greater than 4.3V, show ligtning on the display
-  if(batteryUsb || (switchThemeEditor() && batteryState >= 4))
+  if(shownUsb)
   {
-    // Charging: the cell is being topped up, so it is by definition full enough
-    batteryState = 3;
+    // Charging: the cell is being topped up, so it is by definition full enough.
+    // Only a real USB supply may move the state machine; the preview must not.
+    if(batteryUsb) batteryState = BATT_SOC_LEVELS;
 
     spr.fillRoundRect(x + 2, y + 3, 24, 10, 2, TH.batt_charge);
     spr.drawLine(x + 9 + 8, y + 1, x + 9 + 6, y + 1 + 5, TH.bg);
@@ -285,41 +326,23 @@ bool drawBattery(int x, int y)
   else
   {
     char voltage[8];
-    uint16_t color;
-    int level;
 
     // Keep the last digit stable: only move the shown value when the filtered
     // voltage really moved by 10 mV, otherwise "4.06V" flickers to "4.05V"
     // and back on every redraw.
-    if(batteryShown <= 0.0f || fabsf(batteryVolts - batteryShown) >= BATT_DISPLAY_HYST)
-      batteryShown = batteryVolts;
+    if(batteryShown <= 0.0f || fabsf(shownVolts - batteryShown) >= BATT_DISPLAY_HYST)
+      batteryShown = shownVolts;
 
     // Text representation of the voltage
     sprintf(voltage, "%.02fV", batteryShown);
 
-    // Battery bar color and width
-    switch(batteryState)
-    {
-      case 0:
-        color = TH.batt_low;
-        level = 6;
-        break;
-      case 1:
-        color = TH.batt_full;
-        level = 12;
-        break;
-      case 2:
-        color = TH.batt_full;
-        level = 18;
-        break;
-      case 3:
-      default:
-        color = TH.batt_full;
-        level = 24;
-        break;
-    }
+    // Battery bar: nine steps across the 24 px interior, rounded up so that a
+    // non-empty level always puts ink on the panel (24 * 1 / 9 = 2.7 px). The
+    // empty level draws nothing, leaving just the outline.
+    const int level = ((24 * (int)shownState) + BATT_SOC_LEVELS - 1) / BATT_SOC_LEVELS;
+    const uint16_t color = shownState <= 1 ? TH.batt_low : TH.batt_full;
 
-    spr.fillRoundRect(x + 2, y + 3, level, 10, 2, color);
+    if(level > 0) spr.fillRoundRect(x + 2, y + 3, level, 10, 2, color);
     spr.drawString(voltage, x - 3, y, FONT_SMALL);
     return true;
   }

@@ -187,6 +187,11 @@ static void railOutputLow(int pin)
 static void railsRelease()
 {
   gpio_deep_sleep_hold_dis();  // clears a hold left by a firmware that used it
+  // The backlight is parked on the RTC mux as well (railOutputLow in
+  // deepSleepEnter), and setup() only attaches the LEDC after this runs. Left
+  // routed to the RTC domain, the pad ignores the LEDC and the panel stays dark
+  // for the whole session after a standby wake.
+  rtc_gpio_deinit((gpio_num_t)PIN_LCD_BL);
   if(PIN_AMP_EN >= 0) rtc_gpio_deinit((gpio_num_t)PIN_AMP_EN);
   rtc_gpio_deinit((gpio_num_t)PIN_POWER_ON);
 }
@@ -204,9 +209,10 @@ static void railsRelease()
 
 // Deep sleep is the lowest power state the unit has: the CPU stops, the
 // backlight, amplifier and receiver supply are held low, and the SI4732 is
-// powered down. Without a wake source (the off timer) only a power cycle
-// brings it back; arming the encoder button turns the same shutdown into the
-// long press standby.
+// powered down. The long press standby and the elapsed off timer pass
+// wakeOnButton, which arms the encoder button so the same gesture brings the
+// unit back; receiverShutdown() is the variant without a wake source, undone
+// only by a power cycle.
 static void deepSleepEnter(bool wakeOnButton)
 {
   // Bluetooth standby already muted the audio and cut the amplifier, and the
@@ -270,10 +276,11 @@ void receiverShutdown()
 }
 
 //
-// Long press standby: the off timer's shutdown, but the encoder button stays
-// armed as the wake source. Waking is a full reset, so the receiver is set up
-// from scratch and the audio comes back with the stored band and volume.
-// Never returns.
+// Long press standby: deep sleep with the encoder button armed as the wake
+// source. The elapsed off timer lands here as well, so both ways of switching
+// the unit off are undone by the same long press. Waking is a full reset, so
+// the receiver is set up from scratch and the audio comes back with the stored
+// band and volume. Never returns.
 //
 void standbySleepEnter()
 {
@@ -308,6 +315,15 @@ void standbyWakeConfirm()
     {
       // Nothing has been loaded or changed yet, so the stored settings must
       // not be written back: prefsSave() here would save defaults over them.
+      //
+      // standbyWoke() has already released the rails to the digital domain and
+      // setup() drove PIN_POWER_ON high for the SI4732. Going back to sleep
+      // without parking them on the RTC mux again would leave the receiver
+      // supply floating for the whole sleep instead of held low.
+      railOutputLow(PIN_LCD_BL);
+      railOutputLow(PIN_AMP_EN);
+      railOutputLow(PIN_POWER_ON);
+
       esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_ALL);
       esp_sleep_enable_ext0_wakeup((gpio_num_t)ENCODER_PUSH_BUTTON, 0);
       rtc_gpio_pulldown_dis((gpio_num_t)ENCODER_PUSH_BUTTON);
@@ -336,7 +352,30 @@ void offTimerTick()
   if(!offTimerDeadline) return;
   if(!offTimerRemainingUs())
   {
+    // The countdown ends in the same state as a long press: deep sleep with the
+    // encoder button armed, so the same gesture brings the receiver back on the
+    // stored band instead of leaving it dark until the battery is unplugged.
+    //
+    // One shot, like the standby timer. The duration is stored, and a wake from
+    // this sleep is a full reset: leaving it armed would make every later
+    // session drop back into standby after the same time, with nothing on the
+    // panel to announce it. deepSleepEnter() saves the cleared value.
+    offTimerDeadline = 0;
+    offTimerMinutes = 0;
+    // Both countdowns belong to the session that is ending. A standby timer
+    // still armed here can no longer fire in this one, and leaving it stored
+    // would make the next session drop into Bluetooth standby after the same
+    // delay without anyone asking for it.
+    standbyTimerDeadline = 0;
+    standbyTimerMinutes = 0;
+#if ENCODER_PUSH_BUTTON == 0
+    // On boards where the encoder button doubles as BOOT, holding it at reset
+    // enters the ROM downloader, so it cannot be the wake source. Fall back to
+    // the shutdown that only a power cycle undoes.
     receiverShutdown();
+#else
+    standbySleepEnter();
+#endif
     return;
   }
   // Last minutes: go offline early instead of at the moment of the shutdown.
@@ -450,9 +489,12 @@ const char *getMACAddress()
 //
 // Ramp the SI4732 digital volume to the target level in small steps. Writing
 // the volume property in one jump makes the amplifier reproduce the whole
-// level change as a thump, so mute transitions fade instead. A full 0..63
-// sweep stays under ~40 ms, in the same ballpark as the fixed mute delays
-// this replaces.
+// level change as a thump, so mute transitions fade instead.
+//
+// The ramp runs on the main loop, and doSeek() starts one per encoder detent,
+// so its duration is part of the input latency: the previous 4 units per 2 ms
+// spent ~40 ms on a full 0..63 sweep and swallowed detents. 8 units per ms
+// keeps the transition continuous for the amplifier and costs about 10 ms.
 //
 void volumeFade(uint8_t target)
 {
@@ -460,9 +502,9 @@ void volumeFade(uint8_t target)
 
   while(v != (int)target)
   {
-    v = (target > v) ? min(v + 4, (int)target) : max(v - 4, (int)target);
+    v = (target > v) ? min(v + 8, (int)target) : max(v - 8, (int)target);
     rx.setVolume(v);
-    delay(2);
+    delay(1);
   }
 }
 
@@ -584,7 +626,28 @@ static void bleStandbyEnter()
   bleStandbyAdvertising(true);
 }
 
-//
+// Upper bound for waiting until the encoder button is released again. The
+// panel is blanked before this wait, so a key that stays low (dirty contact,
+// mechanical jam, water) would otherwise park the main loop here forever: the
+// radio keeps playing, the screen stays dark and no input is processed --
+// recoverable only by pulling the battery, and the watchdog cannot help
+// because delay() keeps feeding it. 3 s is far longer than any real press.
+#define ENCODER_RELEASE_TIMEOUT_MS 3000
+
+// Wait for the encoder button to come back up. The debounce interval follows
+// the caller: entering sleep must not be fooled by contact bounce, while
+// waking wants the release seen immediately. Returns early on a stuck key; the
+// caller then continues its normal sequence instead of blocking.
+static void waitEncoderRelease(unsigned int debounceInterval = DEBOUNCE_INTERVAL)
+{
+  uint32_t started = millis();
+  while(pb1.update(digitalRead(ENCODER_PUSH_BUTTON) == LOW, debounceInterval).isPressed)
+  {
+    if((uint32_t)(millis() - started) >= ENCODER_RELEASE_TIMEOUT_MS) return;
+    delay(100);
+  }
+}
+
 // Turn sleep on (1) or off (0), or get current status (2)
 //
 bool sleepOn(int x)
@@ -598,9 +661,10 @@ bool sleepOn(int x)
     tft.sleep();
     delay(120); // Allow sleep entry before a possible immediate wake.
 
-    // Wait till the button is released to prevent immediate wakeup
-    while(pb1.update(digitalRead(ENCODER_PUSH_BUTTON) == LOW).isPressed)
-      delay(100);
+    // Wait till the button is released to prevent immediate wakeup. Bounded:
+    // a stuck key (dirty contact, mechanical jam) must not park the unit here
+    // with the panel already dark and every input dead.
+    waitEncoderRelease();
 
     if(sleepIsBleStandby())
     {
@@ -645,10 +709,12 @@ bool sleepOn(int x)
     delay(120); // Let the panel stabilize before redrawing and enabling the backlight.
     drawScreen();
     ledcWrite(PIN_LCD_BL, currentBrt);
-    // Wait till the button is released to prevent the main loop clicks
+    // Wait till the button is released to prevent the main loop clicks.
+    // Debounce 0 on this path, as before: the click that woke the unit has
+    // already been debounced, and waiting out a second interval here would
+    // swallow the next press on a fast double tap.
     pb1.reset(); // Reset the button state (its timers could be stale due to CPU sleep)
-    while(pb1.update(digitalRead(ENCODER_PUSH_BUTTON) == LOW, 0).isPressed)
-      delay(100);
+    waitEncoderRelease(0);
   }
 
   return(sleep_on);

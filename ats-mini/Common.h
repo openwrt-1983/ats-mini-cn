@@ -253,7 +253,7 @@ void setEncoderHalfStep(bool enabled);
 uint16_t getReceiverFrequency(uint32_t freq);
 int getCurrentBFO();
 bool updateFrequency(int64_t newFreq, bool wrap = true);
-bool doSeek(int16_t enc);
+bool doSeek(int16_t enc, int16_t enca);
 bool clickFreq(bool shortPress);
 uint8_t doAbout(int16_t enc);
 bool consumeAbortPending();

@@ -338,22 +338,35 @@ char replace_accented_char(char c)
   }
 }
 
+// Fixed layout of one eibi.txt line: frequency, time and day columns are
+// 14 + 9 + 11 characters wide, the station name starts at column 34.
+#define EIBI_NAME_COLUMN  34
+#define EIBI_NAME_WIDTH   24
+
 static bool eibiParseLine(const char *line, StationSchedule &entry)
 {
-  char nameStr[sizeof(entry.name) + 1];
+  // Every buffer starts zeroed: %c does not append a terminator, so a
+  // conversion that did not run would otherwise leave stack garbage behind and
+  // the name would be validated and displayed as random bytes.
+  char nameStr[sizeof(entry.name) + 1] = {0};
   char freqStr[15] = {0};
   char timeStr[10] = {0};
   char tmpCol[12]  = {0};
   char *p, *t;
 
-  // Scan line for data
-  if(sscanf(line, "%14c%9c%11c%24c", freqStr, timeStr, tmpCol, nameStr)<3)
+  // Three fixed columns, then the station name up to the end of the line.
+  // Columns are taken individually instead of using a fourth "%24c": that
+  // conversion fails on any line whose name column is shorter than 24, and the
+  // name would then be left unset even though the line carries one.
+  if(strlen(line) < EIBI_NAME_COLUMN) return(false);
+  if(sscanf(line, "%14c%9c%11c", freqStr, timeStr, tmpCol) != 3)
     return(false);
 
   // Terminate found data
   freqStr[14] = '\0';
   timeStr[9] = '\0';
-  nameStr[24] = '\0';
+  strncpy(nameStr, line + EIBI_NAME_COLUMN, EIBI_NAME_WIDTH);
+  nameStr[EIBI_NAME_WIDTH] = '\0';
 
   // Parse frequency
   entry.freq = (uint16_t)atof(freqStr);
@@ -372,6 +385,9 @@ static bool eibiParseLine(const char *line, StationSchedule &entry)
 
   // Remove leading and trailing white space from name
   for(p = nameStr ; *p==' ' || *p=='\t' ; ++p);
+  // An all-blank name leaves p at the terminator, where "strlen(p) - 1" would
+  // point before the buffer. There is nothing worth storing in that case.
+  if(!*p) return(false);
   for(t = p + strlen(p) - 1 ; t>=p && (*t==' ' || *t=='\t') ; *t--='\0');
 
   // Replace accented characters
@@ -470,10 +486,17 @@ bool eibiLoadSchedule()
       {
         char *p, *t;
 
-        // Remove whitespace
+        // Remove whitespace. An empty line (consecutive line endings) leaves
+        // "charBuf + charCnt - 1" pointing before the buffer, so the trimming
+        // runs only when there is something to trim.
         charBuf[charCnt] = '\0';
-        for(p = charBuf ; *p && *p<=' ' ; ++p);
-        for(t = charBuf + charCnt - 1 ; t>=p && *t<=' ' ; *t--='\0');
+        p = charBuf;
+        t = charBuf + (charCnt? charCnt - 1 : 0);
+        if(charCnt)
+        {
+          for(; *p && *p<=' ' ; ++p);
+          for(; t>=p && *t<=' ' ; *t--='\0');
+        }
 
         // If valid non-empty schedule line...
         if(t-p+1>0 && isdigit(*p))

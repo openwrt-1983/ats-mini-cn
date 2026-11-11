@@ -30,6 +30,7 @@
 #define DEFAULT_SLEEP            0  // Default sleep interval, range = 0 (off) to 255 in steps of 5
 #define RDS_CHECK_TIME         250  // Increased from 90
 #define SCHEDULE_CHECK_TIME   2000  // How often to identify the same frequency (ms)
+#define RESET_HOLD_TIME       2500  // Encoder hold at power on before a factory reset starts
 
 // =================================
 // CONSTANTS AND VARIABLES
@@ -172,23 +173,62 @@ void setup()
   spr.setFont(&lgfx::fonts::Orbitron_Light_24);
   spr.setTextColor(TH.text, TH.bg);
 
-  // Press and hold Encoder button to force an preferences reset
-  // Note: preferences reset is recommended after firmware updates
+  // Factory reset: the encoder button is held down at power on. The press has
+  // to survive RESET_HOLD_TIME with a countdown on screen, because a finger
+  // resting on the knob while the battery is inserted would otherwise wipe
+  // every setting *and* format LittleFS (EiBi tables, splash image, DSP
+  // patches) on a plain power-up. Releasing early cancels and boots normally.
   // A standby wake arrives with the button down as well; that press is the
-  // wake gesture, not a factory reset request.
+  // wake gesture, not a reset request.
   if(!standbyWake && digitalRead(ENCODER_PUSH_BUTTON)==LOW)
   {
-    nvsErase();
-    diskInit(true);
-
     ledcWrite(PIN_LCD_BL, 255);       // Default value 255 = 100%
     tft.setTextSize(2);
     tft.setTextColor(TH.text, TH.bg);
     tft.println(getVersion(true));
     tft.println();
-    tft.setTextColor(TH.text_warn, TH.bg);
-    tft.print("Resetting Preferences");
-    while(digitalRead(ENCODER_PUSH_BUTTON) == LOW) delay(100);
+
+    int16_t countdownY = tft.getCursorY();
+    tft.setTextSize(1);
+
+    uint32_t holdStart = millis();
+    bool confirmed = true;
+    while(millis() - holdStart < RESET_HOLD_TIME)
+    {
+      if(digitalRead(ENCODER_PUSH_BUTTON) != LOW)
+      {
+        confirmed = false;
+        break;
+      }
+      unsigned left = (RESET_HOLD_TIME - (millis() - holdStart) + 999) / 1000;
+      tft.setCursor(0, countdownY);
+      tft.setTextColor(TH.text_warn, TH.bg);
+      tft.printf("Hold to reset: %us  ", left);
+      delay(50);
+    }
+
+    if(confirmed)
+    {
+      nvsErase();
+      diskInit(true);
+
+      tft.setCursor(0, countdownY);
+      tft.setTextSize(2);
+      tft.setTextColor(TH.text_warn, TH.bg);
+      tft.print("Resetting Preferences");
+    }
+    else
+    {
+      // Released in time: nothing was touched, boot with the stored settings.
+      tft.setCursor(0, countdownY);
+      tft.setTextColor(TH.text_warn, TH.bg);
+      tft.print("Reset canceled.                ");
+    }
+
+    // Swallow the release so it is not seen as a click later, but never hang
+    // here: a stuck key must not leave the unit on this screen forever.
+    uint32_t released = millis();
+    while(digitalRead(ENCODER_PUSH_BUTTON) == LOW && (uint32_t)(millis() - released) < 3000) delay(100);
   }
 
   // Initialize flash file system
@@ -572,6 +612,9 @@ bool doSeek(int16_t enc, int16_t enca)
   {
     if(isSSB())
     {
+      // Deliberately the accelerated count, not the +/-1 direction: an SSB
+      // step is 2.4 kHz (or less), so walking a band one detent at a time is
+      // impractical. AM/FM use the direction and let the seek do the walking.
       updateFrequency(currentFrequency + (int64_t)enca * getCurrentStep()->step, true);
     }
     else
@@ -594,7 +637,9 @@ bool doSeek(int16_t enc, int16_t enca)
     // Clock is valid because the above seekMode() call checks that
     clockGetHM(&hour, &minute);
 
-    size_t offset = -1;
+    // EIBI.cpp reads (size_t)-1 as "no offset yet, look the frequency up".
+    // Spelling it out keeps the sentinel from looking like an off-by-one.
+    size_t offset = (size_t)-1;
     const StationSchedule *schedule = enc > 0 ?
       eibiNext(freqFromHz(currentFrequency, currentMode), hour, minute, &offset) :
       eibiPrev(freqFromHz(currentFrequency, currentMode), hour, minute, &offset);
@@ -780,6 +825,10 @@ bool handleClick(bool shortPress)
     // Bluetooth standby and CPU sleep (which keeps BLE alive) wake on any
     // click so the app can control the receiver.
     if(sleepKeepsBle()) sleepOn(false);
+    // The display sleep timer blanked the panel: the listener is reaching for
+    // the screen, not for a command, so the click only restores it. This also
+    // means the two branches below apply only while the timer is off, which is
+    // the state a long press leaves the unit in.
     else if(currentSleep)
       sleepOn(false);
     else if(sleepModeIdx == SLEEP_UNLOCKED)

@@ -53,14 +53,16 @@ bool standbyWoke();
 // does not return in that case.
 void standbyWakeConfirm();
 
-// Configured duration is saved; a fresh countdown starts on power-up.
+// Configured duration is saved; a fresh countdown starts on power-up. When it
+// runs out the receiver enters the long press standby (deep sleep with the
+// encoder button armed) and the duration is spent.
 extern uint16_t offTimerMinutes;
 void offTimerRestart();
 uint16_t offTimerRemainingMinutes();
 void offTimerTick();
 
 // Standby timer: same units and limits as the off timer, but it enters
-// Bluetooth standby instead of powering the receiver off.
+// Bluetooth standby instead of the deep sleep standby.
 extern uint16_t standbyTimerMinutes;
 void standbyTimerRestart();
 uint16_t standbyTimerRemainingMinutes();
