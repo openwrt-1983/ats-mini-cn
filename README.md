@@ -6,7 +6,7 @@
 
 本仓库基于官方仓库 [esp32-si4732/ats-mini](https://github.com/esp32-si4732/ats-mini) **v2.45** 修改。
 
-- 原版说明见 [README.upstream.md](README.upstream.md)
+- 原版说明见[官方仓库 README](https://github.com/esp32-si4732/ats-mini#readme)
 - 官方文档：<https://esp32-si4732.github.io/ats-mini/>
 
 ## 版本号规则
