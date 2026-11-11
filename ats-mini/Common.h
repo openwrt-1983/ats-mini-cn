@@ -62,16 +62,6 @@ static constexpr const lgfx::IFont* FONT_DIGITS  = &lgfx::fonts::Font7;  // 48px
 #define FM_STEREO_STEREO 1 // Pin the decoder to stereo, even on weak signals
 #define FM_STEREO_MONO   2 // Force mono audio
 
-// Force mono while a USB supply is connected. Charging raises the noise floor
-// (charge current through the shared ground, common-mode noise from the supply
-// and the cable), and the stereo decoder then turns the pilot and the
-// subcarrier noise into audible hiss; mono removes that.
-#define CHARGE_MONO_OFF 0
-#define CHARGE_MONO_ON  1
-// The supply rail sits only ~130 mV above the charging threshold, so a rail
-// that dips on a load burst must not flip the decoder back and forth.
-#define CHARGE_MONO_DEBOUNCE_MS 600
-
 // Sleep modes
 #define SLEEP_LOCKED    0 // Lock the encoder
 #define SLEEP_UNLOCKED  1 // Do not lock the encoder
@@ -274,10 +264,6 @@ bool consumeAbortPending();
 
 // Battery.c
 float batteryMonitor();
-// Whether a USB supply is present (the charging icon and the charge-time mono
-// override key off this). Refreshes the measurement, which is throttled
-// internally, so it is cheap enough to call from the main loop.
-bool batteryUsbPresent();
 bool drawBattery(int x, int y);
 
 // Scan.c (frequencies and steps in Hz)

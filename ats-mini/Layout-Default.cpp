@@ -59,7 +59,7 @@ void drawLayoutDefault()
 
   // Indicate FM pilot detection, unless the audio is pinned to mono
   drawStereoIndicator(METER_OFFSET_X, METER_OFFSET_Y,
-    (currentMode==FM) && (fmStereoIdx!=FM_STEREO_MONO) && !fmChargeMonoActive() && rx.getCurrentPilot());
+    (currentMode==FM) && (fmStereoIdx!=FM_STEREO_MONO) && rx.getCurrentPilot());
 
   if(currentCmd == CMD_SCAN)
   {

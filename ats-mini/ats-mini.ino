@@ -860,9 +860,6 @@ void loop()
   webScreenshotTick();
   offTimerTick();
   standbyTimerTick();
-  // Follow the USB supply so the charge-time mono override is applied or
-  // removed as the cable goes in or out, without waiting for a band change.
-  chargeMonoTick();
   bool needRedraw = false;
   uint32_t encCounts = consumeEncoderCounts();
   int16_t encCount = (int16_t)(encCounts & 0xFFFF);

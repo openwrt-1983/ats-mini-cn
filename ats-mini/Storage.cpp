@@ -346,7 +346,6 @@ void prefsSave(uint32_t items)
     // value 1 used to mean mono and now means stereo. See the migration in
     // loadSettings().
     prefs.putUChar("FmStereo2",   fmStereoIdx);    // FM stereo mode
-    prefs.putUChar("ChargeMono",  chargeMonoIdx);  // Force mono while charging
     prefs.putBool("AudioClamp",   audioClamp);     // Hardware audio clamp present
     prefs.putUChar("DSPPatchset", dspPatchesIdx);  // DSP patches
     prefs.putUChar("UILayout",    uiLayoutIdx);    // UI Layout
@@ -451,7 +450,6 @@ bool prefsLoad(uint32_t items)
       fmStereoIdx  = loadIndex("FmStereo2", fmStereoIdx, getTotalFMStereoModes());
     else
       fmStereoIdx  = (prefs.getUChar("FmStereo", FM_STEREO_AUTO) == 1) ? FM_STEREO_MONO : FM_STEREO_AUTO;
-    chargeMonoIdx  = loadIndex("ChargeMono", chargeMonoIdx, getTotalChargeMonoModes());
     audioClamp     = prefs.getBool("AudioClamp", true);        // Hardware audio clamp present
     dspPatchesIdx  = prefs.getUChar("DSPPatchset", DSP_PATCHES_DEFAULT); // Uploaded patch set
     uiLayoutIdx    = loadIndex("UILayout", uiLayoutIdx, getTotalUILayouts());

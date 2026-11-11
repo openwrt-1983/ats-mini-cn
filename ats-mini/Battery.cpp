@@ -15,16 +15,21 @@
 //
 // So the pin sees VBAT / 2 and the firmware has to multiply back by (R8+R10)/R10.
 //
-// The nominal ratio is 2.0 (R8 = R10 = 100k). The original ats-mini board was
-// calibrated against a meter at 1.83, but clone boards use the exact nominal
-// divider, where 1.83 reads every voltage ~8.5% low: the USB rail (~4.4 V)
-// then falls below the 4.3 V charging threshold, so the charging icon never
-// appears, and a 3.7 V cell is displayed as 3.42 V. The default is therefore
-// the nominal 2.0.
+// The nominal ratio is 2.0 (R8 = R10 = 100k), but the ADC does not read the
+// divided voltage faithfully on this board: the divider presents ~50k of source
+// impedance, far above what the ESP32-S3 sample-and-hold wants, and the
+// uncalibrated gain of the ADC adds to that. The result is a proportional
+// (gain) error, not an offset: a cell that a meter shows at 4.20 V right after
+// a full charge is read as 1.90 V at the pin, i.e. 3.80 V on the battery scale,
+// which is 9.5% low. The factor below absorbs that error:
 //
-// To recalibrate a unit, measure the cell with a meter while the receiver is
-// idle and set this to 2.0 * (meter volts / displayed volts).
-#define BATT_DIVIDER         2.00f  // (R8 + R10) / R10, nominal 100k/100k
+//   2.00 * (4.20 / 3.80) = 2.21
+//
+// With 2.21 the USB rail reads ~4.89 V (VBUS minus the load-sharing FET drop)
+// and a full cell reads ~4.20 V, so the charging threshold sits safely between
+// the two. To recalibrate a unit, measure the cell with a meter while the
+// receiver is idle and set this to 2.21 * (meter volts / displayed volts).
+#define BATT_DIVIDER         2.21f  // (R8 + R10) / R10 including the ADC gain error
 // Nine samples go into every measurement: two conversions are burnt after the
 // channel switch, the two lowest and the two highest of the remaining thirteen
 // are dropped, and the middle nine are averaged. Nine averaged samples reject
@@ -78,11 +83,17 @@ static const float battSocLevel[BATT_SOC_LEVELS] =
 #define BATT_VALID_MIN       1.000f
 #define BATT_VALID_MAX       2.600f
 
-// USB present: with the load sharing circuit VBUS minus one diode drop sits on
+// USB present: with the load sharing circuit VBUS minus one FET drop sits on
 // the cell rail, well above what a single Li-ion cell can reach. The test is
 // done on the battery scale (after the divider factor), so a full cell cannot
 // be mistaken for a charging one.
-#define BATT_USB_THRESHOLD   4.300f
+//
+// 4.40 V, not 4.30 V: a full cell reads 4.20 V, and the factor above is only
+// good to a couple of percent. With 4.30 V a well-charged cell plus that error
+// could cross the line and show a charging icon with the cable pulled. The
+// supply rail is ~4.89 V, so 200 mV below a full cell still leaves plenty of
+// room for a tired adapter or a thin cable.
+#define BATT_USB_THRESHOLD   4.400f
 
 // State machine used for battery state of charge (SOC) detection with
 // hysteresis (Default = Illegal state)
@@ -283,17 +294,6 @@ float batteryMonitor()
 
   // Return current voltage
   return(batteryVolts);
-}
-
-//
-// Whether a USB supply is present. The value is refreshed by batteryMonitor(),
-// which is throttled to BATT_SAMPLE_INTERVAL and returns the cached state in
-// between, so the caller may poll this from the main loop.
-//
-bool batteryUsbPresent()
-{
-  batteryMonitor();
-  return batteryUsb;
 }
 
 //

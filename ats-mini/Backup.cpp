@@ -164,7 +164,6 @@ String backupBuild()
   backupLine(out, "settings.UTCOffset",     utcOffsetIdx);
   backupLine(out, "settings.FmRegion",      FmRegionIdx);
   backupLine(out, "settings.FmStereoMode",  fmStereoIdx);
-  backupLine(out, "settings.ChargeMono",    chargeMonoIdx);
   backupLine(out, "settings.AudioClamp",    audioClamp ? 1 : 0);
   backupLine(out, "settings.DSPPatchset",   dspPatchesIdx);
   backupLine(out, "settings.UILayout",      uiLayoutIdx);
@@ -308,7 +307,8 @@ static bool applySetting(const String &name, const String &value, long &parsed)
   // backup's 1 still means mono. New files use FmStereoMode below.
   if(name == "FmStereo")      { if(!parseNumber(value, 0, 1, parsed)) return false; fmStereoIdx = parsed ? FM_STEREO_MONO : FM_STEREO_AUTO; return true; }
   if(name == "FmStereoMode")  { if(!parseNumber(value, 0, getTotalFMStereoModes() - 1, parsed)) return false; fmStereoIdx = parsed; return true; }
-  if(name == "ChargeMono")    { if(!parseNumber(value, 0, getTotalChargeMonoModes() - 1, parsed)) return false; chargeMonoIdx = parsed; return true; }
+  // Note: settings.ChargeMono from a v2.45-2 backup lands in the unknown-key
+  // path below and is skipped, so restoring an older file still works.
   if(name == "AudioClamp")    { if(!parseNumber(value, 0, 1, parsed)) return false; audioClamp = parsed != 0; return true; }
   if(name == "DSPPatchset")   { if(!parseNumber(value, 0, PATCH_SET_COUNT, parsed)) return false; dspPatchesIdx = parsed; return true; }
   if(name == "UILayout")      { if(!parseNumber(value, 0, getTotalUILayouts() - 1, parsed)) return false; uiLayoutIdx = parsed; return true; }
