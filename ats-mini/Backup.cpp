@@ -163,7 +163,8 @@ String backupBuild()
   backupLine(out, "settings.EncHalfStep",   encoderHalfStep ? 1 : 0);
   backupLine(out, "settings.UTCOffset",     utcOffsetIdx);
   backupLine(out, "settings.FmRegion",      FmRegionIdx);
-  backupLine(out, "settings.FmStereo",      fmStereoIdx);
+  backupLine(out, "settings.FmStereoMode",  fmStereoIdx);
+  backupLine(out, "settings.ChargeMono",    chargeMonoIdx);
   backupLine(out, "settings.AudioClamp",    audioClamp ? 1 : 0);
   backupLine(out, "settings.DSPPatchset",   dspPatchesIdx);
   backupLine(out, "settings.UILayout",      uiLayoutIdx);
@@ -303,7 +304,11 @@ static bool applySetting(const String &name, const String &value, long &parsed)
   if(name == "EncHalfStep")   { if(!parseNumber(value, 0, 1, parsed)) return false; setEncoderHalfStep(parsed != 0); return true; }
   if(name == "UTCOffset")     { if(!parseNumber(value, 0, getTotalUTCOffsets() - 1, parsed)) return false; utcOffsetIdx = parsed; return true; }
   if(name == "FmRegion")      { if(!parseNumber(value, 0, getTotalFMRegions() - 1, parsed)) return false; FmRegionIdx = parsed; return true; }
-  if(name == "FmStereo")      { if(!parseNumber(value, 0, getTotalFMStereoModes() - 1, parsed)) return false; fmStereoIdx = parsed; return true; }
+  // Legacy key: the stereo list gained "立体声" in the middle, so an old
+  // backup's 1 still means mono. New files use FmStereoMode below.
+  if(name == "FmStereo")      { if(!parseNumber(value, 0, 1, parsed)) return false; fmStereoIdx = parsed ? FM_STEREO_MONO : FM_STEREO_AUTO; return true; }
+  if(name == "FmStereoMode")  { if(!parseNumber(value, 0, getTotalFMStereoModes() - 1, parsed)) return false; fmStereoIdx = parsed; return true; }
+  if(name == "ChargeMono")    { if(!parseNumber(value, 0, getTotalChargeMonoModes() - 1, parsed)) return false; chargeMonoIdx = parsed; return true; }
   if(name == "AudioClamp")    { if(!parseNumber(value, 0, 1, parsed)) return false; audioClamp = parsed != 0; return true; }
   if(name == "DSPPatchset")   { if(!parseNumber(value, 0, PATCH_SET_COUNT, parsed)) return false; dspPatchesIdx = parsed; return true; }
   if(name == "UILayout")      { if(!parseNumber(value, 0, getTotalUILayouts() - 1, parsed)) return false; uiLayoutIdx = parsed; return true; }

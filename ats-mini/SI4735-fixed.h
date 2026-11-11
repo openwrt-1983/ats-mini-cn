@@ -253,6 +253,24 @@ class SI4735_fixed: public SI4735
       setFmBlendMultiPathMonoThreshold(60);
     }
 
+    // "立体声": pin the decoder to stereo, the counterpart of setFmStereoOff().
+    //
+    // The two property pairs run in opposite directions (AN332, page 60):
+    //   * RSSI/SNR: blend starts when the value drops BELOW the threshold,
+    //     so 0 = full stereo, 127 = full mono.
+    //   * multipath: blend starts when multipath rises ABOVE the threshold,
+    //     so 100 = full stereo, 0 = full mono. Setting these to 0 as well
+    //     would pin the audio to mono instead of stereo.
+    void setFmStereoForced()
+    {
+      setFmBlendRssiStereoThreshold(0);
+      setFmBLendRssiMonoThreshold(0);
+      setFmBlendSnrStereoThreshold(0);
+      setFmBLendSnrMonoThreshold(0);
+      setFmBlendMultiPathStereoThreshold(100);
+      setFmBlendMultiPathMonoThreshold(100);
+    }
+
     // Decode UTC time directly from the RDS data blocks.
     // SI4735::getRdsDateTime() converts it to the broadcaster's local time,
     // which cannot be converted back reliably from clock-face times alone.

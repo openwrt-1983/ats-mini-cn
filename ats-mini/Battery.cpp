@@ -15,13 +15,16 @@
 //
 // So the pin sees VBAT / 2 and the firmware has to multiply back by (R8+R10)/R10.
 //
-// The nominal ratio is 2.0, but the divider resistors, the ADC and the cell
-// protection circuit all shift the result, so the factor is calibrated against
-// a meter on the real board: 1.83.
+// The nominal ratio is 2.0 (R8 = R10 = 100k). The original ats-mini board was
+// calibrated against a meter at 1.83, but clone boards use the exact nominal
+// divider, where 1.83 reads every voltage ~8.5% low: the USB rail (~4.4 V)
+// then falls below the 4.3 V charging threshold, so the charging icon never
+// appears, and a 3.7 V cell is displayed as 3.42 V. The default is therefore
+// the nominal 2.0.
 //
 // To recalibrate a unit, measure the cell with a meter while the receiver is
-// idle and set this to 1.83 * (meter volts / displayed volts).
-#define BATT_DIVIDER         1.83f  // Calibrated (R8 + R10) / R10
+// idle and set this to 2.0 * (meter volts / displayed volts).
+#define BATT_DIVIDER         2.00f  // (R8 + R10) / R10, nominal 100k/100k
 // Nine samples go into every measurement: two conversions are burnt after the
 // channel switch, the two lowest and the two highest of the remaining thirteen
 // are dropped, and the middle nine are averaged. Nine averaged samples reject
@@ -231,11 +234,22 @@ float batteryMonitor()
 
   if(charging) return batteryVolts;
 
-  // The first sample after the cable is pulled still carries a batteryVolts
-  // that the fast filter has not brought down from the USB rail yet. Feeding it
-  // to the slow path would nudge the average up by up to a few tens of mV
-  // exactly when the bars must not move; the next sample is 500 ms later.
-  if(unplugged) return batteryVolts;
+  // The sample right after the cable is pulled is the first real cell reading.
+  // The fast filter is still parked on the USB rail (~4.4 V) and would take
+  // several measurements to come down, so the display would linger near 4.4 V
+  // (and the status stream would report it) for seconds. Snap everything to
+  // this reading: the fast filter, and also the slow path and the state
+  // machine, because charging forced the level to full and the tracked slow
+  // average is either stale (plugged for a long time) or one behind reality.
+  // Re-seeding here keeps the bars from walking down from 100% level by level.
+  if(unplugged)
+  {
+    batteryVolts = raw;
+    batterySlow  = raw;
+    slowReady    = true;
+    batteryState = batteryLevelFor(batterySlow);
+    return batteryVolts;
+  }
 
   if(!slowReady)
   {
@@ -269,6 +283,17 @@ float batteryMonitor()
 
   // Return current voltage
   return(batteryVolts);
+}
+
+//
+// Whether a USB supply is present. The value is refreshed by batteryMonitor(),
+// which is throttled to BATT_SAMPLE_INTERVAL and returns the cached state in
+// between, so the caller may poll this from the main loop.
+//
+bool batteryUsbPresent()
+{
+  batteryMonitor();
+  return batteryUsb;
 }
 
 //

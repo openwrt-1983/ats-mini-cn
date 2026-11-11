@@ -49,7 +49,8 @@
 #define CMD_ABOUT      0x3500 // |
 #define CMD_OFFTIMER   0x3600 // |
 #define CMD_STBYTIMER  0x3700 // |
-#define CMD_ENCODER    0x3800 //-+
+#define CMD_ENCODER    0x3800 // |
+#define CMD_CHARGEMONO 0x3900 //-+
 
 // UI Layouts
 #define UI_DEFAULT  0
@@ -103,6 +104,7 @@ extern int8_t menuIdx;
 extern int8_t settingsIdx;
 extern uint8_t sleepModeIdx;
 extern uint8_t fmStereoIdx;
+extern uint8_t chargeMonoIdx;
 extern uint8_t usbModeIdx;
 extern uint8_t tcpModeIdx;
 extern uint8_t bleModeMenuIdx;
@@ -134,10 +136,18 @@ void doSelectDigit(int16_t enc);
 bool clickHandler(uint16_t cmd, bool shortPress);
 void selectBand(uint8_t idx, bool drawLoadingPatch = true);
 void applyFmStereo();
+// True while the charge-time mono override is in effect (setting on and USB
+// supply present). The stereo indicator uses it so it cannot claim stereo
+// audio that the decoder is not producing.
+bool fmChargeMonoActive();
+// Applies/removes the charge-time mono override as the cable is plugged in or
+// out. Cheap on the loop: it only touches I2C when the state actually changes.
+void chargeMonoTick();
 int getTotalBands();
 int getTotalModes();
 int getTotalFMRegions();
 int getTotalFMStereoModes();
+int getTotalChargeMonoModes();
 int getTotalSleepModes();
 int getTotalUILayouts();
 int getTotalUSBModes();

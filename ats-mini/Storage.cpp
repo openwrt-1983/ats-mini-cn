@@ -342,7 +342,11 @@ void prefsSave(uint32_t items)
                                   ((uint32_t)currentSquelch[USB] << 16) |
                                   ((uint32_t)currentSquelch[AM] << 24)); // Squelch
     prefs.putUChar("FmRegion",    FmRegionIdx);    // FM region
-    prefs.putUChar("FmStereo",    fmStereoIdx);    // FM stereo mode
+    // Stored under a new key: the list gained "立体声" in the middle, so the
+    // value 1 used to mean mono and now means stereo. See the migration in
+    // loadSettings().
+    prefs.putUChar("FmStereo2",   fmStereoIdx);    // FM stereo mode
+    prefs.putUChar("ChargeMono",  chargeMonoIdx);  // Force mono while charging
     prefs.putBool("AudioClamp",   audioClamp);     // Hardware audio clamp present
     prefs.putUChar("DSPPatchset", dspPatchesIdx);  // DSP patches
     prefs.putUChar("UILayout",    uiLayoutIdx);    // UI Layout
@@ -438,7 +442,16 @@ bool prefsLoad(uint32_t items)
     currentSquelch[USB] = (squelch >> 16) & 0xff;
     currentSquelch[AM]  = (squelch >> 24) & 0xff;
     FmRegionIdx    = loadIndex("FmRegion", FmRegionIdx, getTotalFMRegions());
-    fmStereoIdx    = loadIndex("FmStereo", fmStereoIdx, getTotalFMStereoModes());
+    // The stereo list is 自动 / 立体声 / 单声道 now, so a unit coming from an
+    // older build has the old meaning in "FmStereo": 1 was mono. Read the old
+    // key once (it is never written again), translate it, and let the new key
+    // take over from the first save onwards. Without this an owner who had
+    // chosen mono would silently come up in stereo after the update.
+    if(prefs.isKey("FmStereo2"))
+      fmStereoIdx  = loadIndex("FmStereo2", fmStereoIdx, getTotalFMStereoModes());
+    else
+      fmStereoIdx  = (prefs.getUChar("FmStereo", FM_STEREO_AUTO) == 1) ? FM_STEREO_MONO : FM_STEREO_AUTO;
+    chargeMonoIdx  = loadIndex("ChargeMono", chargeMonoIdx, getTotalChargeMonoModes());
     audioClamp     = prefs.getBool("AudioClamp", true);        // Hardware audio clamp present
     dspPatchesIdx  = prefs.getUChar("DSPPatchset", DSP_PATCHES_DEFAULT); // Uploaded patch set
     uiLayoutIdx    = loadIndex("UILayout", uiLayoutIdx, getTotalUILayouts());

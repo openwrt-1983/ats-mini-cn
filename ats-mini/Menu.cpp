@@ -136,16 +136,17 @@ static const char *menu[] =
 #define MENU_SCROLL       11
 #define MENU_RDS          12
 #define MENU_FM_STEREO    13
-#define MENU_FM_REGION    14
-#define MENU_CALIBRATION  15
-#define MENU_DSP_PATCHES  16
-#define MENU_LOADEIBI     17
-#define MENU_UPDATEFW     18
-#define MENU_USBMODE      19
-#define MENU_TCPMODE      20
-#define MENU_BLEMODE      21
-#define MENU_WIFIMODE     22
-#define MENU_ABOUT        23
+#define MENU_CHARGEMONO   14
+#define MENU_FM_REGION    15
+#define MENU_CALIBRATION  16
+#define MENU_DSP_PATCHES  17
+#define MENU_LOADEIBI     18
+#define MENU_UPDATEFW     19
+#define MENU_USBMODE      20
+#define MENU_TCPMODE      21
+#define MENU_BLEMODE      22
+#define MENU_WIFIMODE     23
+#define MENU_ABOUT        24
 
 
 static uint8_t updateFwIdx = 0;
@@ -169,6 +170,7 @@ static const char *settings[] =
   "滚动方向",
   "RDS",
   "FM 立体声",
+  "充电单声道",
   "FM 地区",
   "校准",
   "DSP 补丁",
@@ -206,9 +208,23 @@ int getTotalModes() { return(ITEM_COUNT(bandModeDesc)); }
 //
 
 uint8_t fmStereoIdx = FM_STEREO_AUTO;
-const char *const fmStereoDesc[] = { "自动", "单声道" };
+const char *const fmStereoDesc[] = { "自动", "立体声", "单声道" };
 
 int getTotalFMStereoModes() { return(ITEM_COUNT(fmStereoDesc)); }
+
+//
+// Charging time mono override
+//
+// Plugging the USB cable in raises the noise floor: the charge current runs
+// through the shared ground, the supply and the cable inject common-mode
+// noise, and the FM stereo decoder turns that into audible hiss. Forcing mono
+// while the cable is in removes the pilot and the subcarrier noise, and the
+// receiver goes back to the user's own stereo setting as soon as it is pulled.
+//
+uint8_t chargeMonoIdx = CHARGE_MONO_ON;
+const char *const chargeMonoDesc[] = { "关", "开" };
+
+int getTotalChargeMonoModes() { return(ITEM_COUNT(chargeMonoDesc)); }
 
 bool audioClamp = true;
 
@@ -811,19 +827,80 @@ void doFmRegion(int16_t enc)
 // the blend thresholds out of reach. This has to run again after every
 // band change, because the FM tuner starts up with the defaults.
 //
+// The charging override is folded in here rather than in the caller, so that
+// every path (band change, menu, web config, cable in/out) ends up with the
+// same answer for "should this be mono right now".
+//
+bool fmChargeMonoActive()
+{
+  return(chargeMonoIdx == CHARGE_MONO_ON && batteryUsbPresent());
+}
+
 void applyFmStereo()
 {
   if(currentMode!=FM) return;
 
-  if(fmStereoIdx==FM_STEREO_MONO)
+  // Charging wins over the user's own choice; the tick below puts the user's
+  // setting back as soon as the cable is pulled.
+  if(fmStereoIdx==FM_STEREO_MONO || fmChargeMonoActive())
     rx.setFmStereoOff();
+  else if(fmStereoIdx==FM_STEREO_STEREO)
+    rx.setFmStereoForced();
   else
     rx.setFmStereoOn();
+}
+
+//
+// Called from the main loop. Follows the charging state and applies or removes
+// the override as the cable goes in or out, instead of waiting for the next
+// band change. The USB state itself is refreshed by batteryMonitor() at its own
+// 500 ms pace, so this costs a comparison per pass and one I2C write per change.
+//
+// The state has to survive a short debounce window first: the supply rail sits
+// only ~130 mV above the detection threshold, and a rail that dips on a Wi-Fi
+// burst would otherwise flip the decoder between stereo and mono (audible).
+//
+void chargeMonoTick()
+{
+  static int8_t   lastState = -1;
+  static uint32_t seenMs = 0;
+
+  // The tuner is powered down in BLE standby; a stereo write there would only
+  // time out on the bus. Leave the recorded state alone and let the wake path
+  // (which re-runs the band setup) settle it on the next pass.
+  if(radioInStandby()) return;
+
+  int8_t state = fmChargeMonoActive() ? 1 : 0;
+
+  if(state == lastState)
+  {
+    seenMs = 0;
+    return;
+  }
+
+  uint32_t now = millis();
+  if(!seenMs)
+  {
+    seenMs = now ? now : 1;
+    return;
+  }
+  if((uint32_t)(now - seenMs) < CHARGE_MONO_DEBOUNCE_MS) return;
+
+  lastState = state;
+  seenMs = 0;
+  applyFmStereo();
 }
 
 void doFmStereo(int16_t enc)
 {
   fmStereoIdx = wrap_range(fmStereoIdx, enc, 0, LAST_ITEM(fmStereoDesc));
+  applyFmStereo();
+  if(enc) prefsRequestSave(SAVE_SETTINGS);
+}
+
+static void doChargeMono(int16_t enc)
+{
+  chargeMonoIdx = wrap_range(chargeMonoIdx, enc, 0, LAST_ITEM(chargeMonoDesc));
   applyFmStereo();
   if(enc) prefsRequestSave(SAVE_SETTINGS);
 }
@@ -1317,6 +1394,7 @@ static void clickSettings(int cmd, bool shortPress)
     case MENU_WIFIMODE:   currentCmd = CMD_WIFIMODE;   break;
     case MENU_FM_REGION:  currentCmd = CMD_FM_REGION; break;
     case MENU_FM_STEREO:  currentCmd = CMD_FM_STEREO; break;
+    case MENU_CHARGEMONO: currentCmd = CMD_CHARGEMONO; break;
     case MENU_DSP_PATCHES: currentCmd = CMD_DSP_PATCHES; break;
     case MENU_ABOUT:      currentCmd = CMD_ABOUT;     break;
     case MENU_UPDATEFW:
@@ -1349,6 +1427,7 @@ bool doSideBar(uint16_t cmd, int16_t enc, int16_t enca)
     case CMD_AVC:        doAvc(enc);break;
     case CMD_FM_REGION:  doFmRegion(scrollDirection * enc);break;
     case CMD_FM_STEREO:  doFmStereo(scrollDirection * enc);break;
+    case CMD_CHARGEMONO: doChargeMono(scrollDirection * enc);break;
     case CMD_DSP_PATCHES: doDspPatches(scrollDirection * enc);break;
     case CMD_SETTINGS:   doSettings(scrollDirection * enc);break;
     case CMD_BRT:        doBrt(enca);break;
@@ -2115,6 +2194,30 @@ static void drawFmStereo(int x, int y, int sx)
   }
 }
 
+static void drawChargeMono(int x, int y, int sx)
+{
+  drawCommon(settings[MENU_CHARGEMONO], x, y, sx, true);
+
+  int count = ITEM_COUNT(chargeMonoDesc);
+  for(int i=-2 ; i<3 ; i++)
+  {
+    if(i==0) {
+      drawZoomedMenu(chargeMonoDesc[abs((chargeMonoIdx+count+i)%count)]);
+      spr.setTextColor(TH.menu_hl_text, TH.menu_hl_bg);
+    } else {
+      spr.setTextColor(TH.menu_item);
+    }
+
+    // Prevent repeats for short menus
+    if (count < 5 && ((chargeMonoIdx+i) < 0 || (chargeMonoIdx+i) >= count)) {
+      continue;
+    }
+
+    spr.setTextDatum(MC_DATUM);
+    spr.drawString(chargeMonoDesc[abs((chargeMonoIdx+count+i)%count)], 40+x+(sx/2), 64+y+(i*16), FONT_SMALL);
+  }
+}
+
 static void drawDspPatches(int x, int y, int sx)
 {
   drawCommon(settings[MENU_DSP_PATCHES], x, y, sx, true);
@@ -2358,6 +2461,7 @@ void drawSideBar(uint16_t cmd, int x, int y, int sx)
     case CMD_AVC:        drawAvc(x, y, sx);        break;
     case CMD_FM_REGION:  drawFmRegion(x, y, sx);   break;
     case CMD_FM_STEREO:  drawFmStereo(x, y, sx);   break;
+    case CMD_CHARGEMONO: drawChargeMono(x, y, sx); break;
     case CMD_DSP_PATCHES: drawDspPatches(x, y, sx); break;
     case CMD_BRT:        drawBrt(x, y, sx);        break;
     case CMD_RDS:        drawRDSMode(x, y, sx);    break;
