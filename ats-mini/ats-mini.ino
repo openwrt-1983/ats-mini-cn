@@ -339,10 +339,12 @@ void setup()
 
   // The button that woke the unit is usually still down. Wait for the release
   // and clear the tracker, so it does not arrive as a click on the first pass
-  // of the main loop.
+  // of the main loop. Bounded: "CPU off" can be woken by a detent with the
+  // button untouched, and a pad that never comes up must not park setup() here.
   if(standbyWake)
   {
-    while(digitalRead(ENCODER_PUSH_BUTTON) == LOW) delay(10);
+    uint32_t started = millis();
+    while(digitalRead(ENCODER_PUSH_BUTTON) == LOW && millis() - started < 3000) delay(10);
     pb1.reset();
   }
 }
@@ -767,9 +769,11 @@ bool handleRotation(int16_t enc, int16_t accelerated, bool pressed)
 {
   if(!enc) return false;
   // In Bluetooth standby or CPU sleep (which keeps BLE alive) any input
-  // wakes the receiver and is processed.
+  // wakes the receiver and is processed. Locked and "CPU off" sleep accept no
+  // command while the panel is dark: on those the detent only wakes the unit,
+  // and the main loop has already consumed it by the time we get here.
   if(sleepOn() && sleepKeepsBle()) sleepOn(false);
-  else if(sleepOn() && sleepModeIdx == SLEEP_LOCKED) return false;
+  else if(sleepOn()) return false;
   bool changed = false;
   if(pressed)
   {
@@ -823,21 +827,15 @@ bool handleClick(bool shortPress)
   if(sleepOn())
   {
     // Bluetooth standby and CPU sleep (which keeps BLE alive) wake on any
-    // click so the app can control the receiver.
+    // click so the app can control the receiver. "CPU off" never reaches this
+    // point: its wake is handled inside sleepOn(), which blocks until the knob
+    // is touched and consumes the gesture before returning.
     if(sleepKeepsBle()) sleepOn(false);
     // The display sleep timer blanked the panel: the listener is reaching for
-    // the screen, not for a command, so the click only restores it. This also
-    // means the two branches below apply only while the timer is off, which is
-    // the state a long press leaves the unit in.
+    // the screen, not for a command, so the click only restores it.
     else if(currentSleep)
       sleepOn(false);
-    else if(sleepModeIdx == SLEEP_UNLOCKED)
-    {
-      if(shortPress && currentCmd == CMD_NONE)
-        currentCmd = CMD_VOLUME;
-      else if(currentCmd == CMD_VOLUME)
-        clickHandler(currentCmd, shortPress);
-    }
+    // Encoder locked: while the panel is dark the unit accepts no command.
     else return false;
   }
   else if(!clickHandler(currentCmd, shortPress))

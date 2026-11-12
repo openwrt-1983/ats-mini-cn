@@ -248,7 +248,7 @@ int getTotalRDSModes() { return(ITEM_COUNT(rdsMode)); }
 
 uint8_t sleepModeIdx = SLEEP_LOCKED;
 const char *const sleepModeDesc[] =
-{ "锁定", "解锁", "CPU 睡眠", "BLE 待机" };
+{ "锁定", "CPU 关闭", "CPU 睡眠", "BLE 待机" };
 
 int getTotalSleepModes() { return(ITEM_COUNT(sleepModeDesc)); }
 

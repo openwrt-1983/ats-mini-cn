@@ -16,6 +16,11 @@
 
 extern ButtonTracker pb1;
 
+// Defined in the main sketch: drains the encoder accumulator and returns what
+// had built up. "CPU off" is woken by a single detent, so that detent has to be
+// swallowed rather than applied as a tuning step.
+extern uint32_t consumeEncoderCounts();
+
 // Current sleep status, returned by sleepOn()
 static bool sleep_on = false;
 
@@ -157,33 +162,68 @@ void touchActivity()
   standbyTimerRestart();
 }
 
-// Drive a rail low for the whole deep sleep. The digital domain is powered
-// down, so a pin left on the digital mux loses its configuration and floats:
-// it has to be routed to the RTC IO mux, which keeps its own configuration and
-// keeps driving the pad while the rest of the chip is off.
+// Park a pad on the RTC IO mux at a fixed level for the whole deep sleep.
+//
+// The digital domain is powered down, so a pin left on the digital mux loses
+// its configuration and floats: it has to be routed to the RTC IO mux, which
+// keeps its own configuration and keeps driving the pad while the rest of the
+// chip is off. The hold function is what makes that survive the transition:
+// without it the pad configuration is reloaded when the digital domain goes
+// down, the pad stops driving, and a rail that must stay HIGH (the receiver
+// supply, the SI4732 reset, the amplifier enable) collapses -- the station goes
+// silent the instant the chip sleeps, with nothing in the log to say why.
+//
+// RTC_GPIO_MODE_INPUT_OUTPUT rather than OUTPUT_ONLY keeps the input buffer on,
+// so the caller can read the pad back and confirm the drive actually took.
 //
 // Note what is deliberately NOT used here: gpio_hold_en()/gpio_deep_sleep_hold
-// _en(). On the S3 the only hold available is RTC_CNTL_DG_PAD_AUTOHOLD_EN, and
-// it holds *every* digital pad at the level it had when the chip went down --
-// including the encoder button input, frozen at its released (high) level. The
-// ext0 wake source could then never see a press again.
-static void railOutputLow(int pin)
+// _en(). On the S3 the only deep sleep hold available is
+// RTC_CNTL_DG_PAD_AUTOHOLD_EN, and it holds *every* digital pad at the level it
+// had when the chip went down -- including the encoder button input, frozen at
+// its released (high) level. The wake source could then never see a press again.
+//
+// The level is written before the direction is enabled: between rtc_gpio_init()
+// and the output enable the pad is high-impedance for a few microseconds, and
+// driving the register first keeps that window from showing up as a dip on the
+// amplifier enable.
+//
+// Returns false when the pad cannot be parked at that level (not RTC capable,
+// or the hold was refused), so the caller can refuse to sleep instead of
+// trading the audio for a number on a power meter.
+static bool railPark(int pin, int level)
 {
-  if(pin < 0) return;
+  if(pin < 0) return true;  // board without this rail
   pinMode(pin, OUTPUT);
-  digitalWrite(pin, LOW);
+  digitalWrite(pin, level ? HIGH : LOW);
   // Not an RTC capable pad (e.g. the backlight on GPIO38): nothing more can be
-  // done, it goes down with the digital domain.
-  if(rtc_io_number_get((gpio_num_t)pin) < 0) return;
+  // done, it goes down with the digital domain. Fine for a rail that has to be
+  // low, fatal for one that has to stay up.
+  if(rtc_io_number_get((gpio_num_t)pin) < 0) return level == 0;
   rtc_gpio_init((gpio_num_t)pin);
   rtc_gpio_pullup_dis((gpio_num_t)pin);
   rtc_gpio_pulldown_dis((gpio_num_t)pin);
-  rtc_gpio_set_level((gpio_num_t)pin, 0);
-  rtc_gpio_set_direction((gpio_num_t)pin, RTC_GPIO_MODE_OUTPUT_ONLY);
+  rtc_gpio_set_level((gpio_num_t)pin, level ? 1 : 0);
+  rtc_gpio_set_direction((gpio_num_t)pin, RTC_GPIO_MODE_INPUT_OUTPUT);
+  return rtc_gpio_hold_en((gpio_num_t)pin) == ESP_OK;
 }
 
-// Hand the rails back to the digital domain after a deep sleep: the RTC IO mux
-// keeps its routing across the wake, so setup() could not drive them otherwise.
+static void railOutputLow(int pin)
+{
+  railPark(pin, 0);
+}
+
+// Hand a pad back to the digital domain after a deep sleep: the RTC IO mux
+// keeps its routing (and, with the hold, its level) across the wake, so setup()
+// could not drive them otherwise.
+static void railRelease(int pin)
+{
+  if(pin < 0) return;
+  // Release before deinit: a held pad ignores the digital output register, so
+  // every pinMode()/digitalWrite() setup() makes would be silently swallowed.
+  rtc_gpio_hold_dis((gpio_num_t)pin);
+  rtc_gpio_deinit((gpio_num_t)pin);
+}
+
 static void railsRelease()
 {
   gpio_deep_sleep_hold_dis();  // clears a hold left by a firmware that used it
@@ -191,9 +231,16 @@ static void railsRelease()
   // deepSleepEnter), and setup() only attaches the LEDC after this runs. Left
   // routed to the RTC domain, the pad ignores the LEDC and the panel stays dark
   // for the whole session after a standby wake.
-  rtc_gpio_deinit((gpio_num_t)PIN_LCD_BL);
-  if(PIN_AMP_EN >= 0) rtc_gpio_deinit((gpio_num_t)PIN_AMP_EN);
-  rtc_gpio_deinit((gpio_num_t)PIN_POWER_ON);
+  railRelease(PIN_LCD_BL);
+  railRelease(PIN_AMP_EN);
+  railRelease(PIN_POWER_ON);
+  // "CPU off" parks the receiver rails as well: the mute clamp ("1 = mute"), the
+  // SI4732 reset line and the receiver supply. Left on the RTC mux they keep
+  // driving the pad and the digital writes that follow would be ignored -- the
+  // receiver could never be muted, reset or powered down again for the rest of
+  // the session.
+  railRelease(AUDIO_MUTE);
+  railRelease(RESET_PIN);
 }
 
 // How long the wake press must still be held once setup() runs. Only a guard
@@ -267,6 +314,14 @@ static void deepSleepEnter(bool wakeOnButton)
     rtc_gpio_deinit((gpio_num_t)ENCODER_PUSH_BUTTON);
     esp_sleep_pd_config(ESP_PD_DOMAIN_RTC_PERIPH, ESP_PD_OPTION_OFF);
   }
+  // "CPU off" leaves VDD_SDIO up so the display sprite survives its light
+  // sleep. Deep sleep is a cold start -- setup() recreates the sprite -- so the
+  // domain goes back to the power manager's own decision here; without this a
+  // timed shut down entered from "CPU off" would keep the PSRAM powered for the
+  // whole standby and pull hundreds of microamps instead of a handful. AUTO,
+  // not OFF, so this stays exactly the behaviour every other deep sleep has
+  // instead of introducing a new power-down the board was never tested with.
+  esp_sleep_pd_config(ESP_PD_DOMAIN_VDDSDIO, ESP_PD_OPTION_AUTO);
   esp_deep_sleep_start();
 }
 
@@ -287,10 +342,159 @@ void standbySleepEnter()
   deepSleepEnter(true);
 }
 
+// True when any of the three knob pads is pulled low.
+static bool knobTouched()
+{
+  return digitalRead(ENCODER_PUSH_BUTTON) == LOW ||
+         digitalRead(ENCODER_PIN_A) == LOW ||
+         digitalRead(ENCODER_PIN_B) == LOW;
+}
+
+//
+// "CPU off": the CPU stops, the receiver keeps playing.
+//
+// This is a light sleep rather than a deep sleep, and that is the whole point.
+// The audio path never passes through the ESP32 -- the SI4732 drives the
+// amplifier on its own -- so the mode only has to stop everything that is not
+// the receiver. In light sleep the digital domain stays powered, so every pad
+// keeps driving the level it already had: the receiver supply enable
+// (PIN_POWER_ON), the SI4732 reset line (RESET_PIN), the amplifier enable
+// (PIN_AMP_EN) and the mute clamp (AUDIO_MUTE) hold by themselves.
+//
+// A deep sleep version of this mode was tried first and kept going silent on
+// real hardware: once the digital domain is powered down those rails depend on
+// the RTC IO mux and the hold function surviving the transition, and when that
+// does not take, the receiver loses its supply or its reset line and the
+// station stops the instant the chip sleeps -- with no way to tell from the
+// outside which of the four pads gave way. Light sleep removes the question
+// entirely: there is no transition to survive.
+//
+// What stops: the CPU (clock gated), Wi-Fi, Bluetooth, the panel and its
+// backlight. What keeps running: the SI4732, the amplifier and the speaker.
+// Waking is immediate -- no reset, no splash, no gap in the audio.
+//
+// The wake source is the digital GPIO wake-up of light sleep, not ext1. ext1
+// watches pads through the RTC IO input register, which only follows the pad if
+// the pad is routed to the RTC mux -- exactly the routing that has to be undone
+// on wake before the encoder can be read again. The digital wake-up watches the
+// same pads where the firmware already reads them.
+//
+static void cpuOffSleepEnter()
+{
+  // The panel has already been blanked and told to sleep by sleepOn(1); only
+  // the backlight is left. It is driven to zero rather than detached: the LEDC
+  // keeps its channel and resolution, so the wake path can write the brightness
+  // straight back instead of re-attaching and hoping for the same channel.
+  ledcWrite(PIN_LCD_BL, 0);
+
+  // Both radios off: nothing has to stay reachable in this mode.
+  netStop();
+  bleStop();
+
+  // The display sprite lives in the OPI PSRAM, so VDD_SDIO has to stay up for
+  // the whole sleep. Left to the default it is powered down, the sprite reads
+  // back as garbage and the first drawScreen() after waking pushes noise.
+  esp_sleep_pd_config(ESP_PD_DOMAIN_VDDSDIO, ESP_PD_OPTION_ON);
+  esp_sleep_pd_config(ESP_PD_DOMAIN_RTC_PERIPH, ESP_PD_OPTION_ON);
+
+  // Set once the unit has woken repeatedly on something that is not the knob
+  // (a peripheral interrupt, a bouncing pad). The retries are then paced by a
+  // timer: the screen stays dark either way, but the CPU is not kept busy.
+  bool paced = false;
+  uint8_t noise = 0;
+
+  for(;;)
+  {
+    // Let the gesture that got us here end. The level triggered wake-up would
+    // fire on the spot again while a pad is still down, turning this into a
+    // spin loop. Bounded, so a stuck pad cannot park the unit here with the
+    // screen already dark.
+    uint32_t released = millis();
+    while(knobTouched() && millis() - released < STANDBY_RELEASE_TIMEOUT_MS) delay(5);
+    delay(30);  // Debounce margin.
+
+    // The off timer has to be able to power the unit down on its own -- it is
+    // meant for an unattended shutdown, and nothing else runs while the CPU is
+    // stopped. Same entry point the main loop uses, so the countdown is spent
+    // and the button-armed standby is left behind exactly as a timed power-off
+    // always was. Does not return.
+    if(offTimerDeadline && offTimerRemainingUs() <= 0) offTimerTick();
+
+    // A pad that is already low (a knob parked between two detents) is not
+    // armed: LOW_LEVEL would fire immediately, once per retry, forever. The
+    // other pads still answer the next movement.
+    esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_ALL);
+    bool armed = false;
+    if(digitalRead(ENCODER_PUSH_BUTTON) != LOW)
+    {
+      gpio_wakeup_enable((gpio_num_t)ENCODER_PUSH_BUTTON, GPIO_INTR_LOW_LEVEL);
+      armed = true;
+    }
+    if(digitalRead(ENCODER_PIN_A) != LOW)
+    {
+      gpio_wakeup_enable((gpio_num_t)ENCODER_PIN_A, GPIO_INTR_LOW_LEVEL);
+      armed = true;
+    }
+    if(digitalRead(ENCODER_PIN_B) != LOW)
+    {
+      gpio_wakeup_enable((gpio_num_t)ENCODER_PIN_B, GPIO_INTR_LOW_LEVEL);
+      armed = true;
+    }
+    if(!armed) break;  // every pad low: nothing can wake us, stay awake
+
+    // A tick keeps a wake storm from turning into a busy loop, and makes the
+    // off timer notice its own expiry within a minute instead of waiting for
+    // somebody to touch the knob.
+    int64_t timerUs = paced ? 2000000LL : 0;
+    int64_t offLeft = offTimerRemainingUs();
+    if(offLeft > 0 && (timerUs == 0 || offLeft < timerUs))
+      timerUs = offLeft > 60000000LL ? 60000000LL : offLeft;
+    if(timerUs > 0) esp_sleep_enable_timer_wakeup((uint64_t)timerUs);
+
+    esp_sleep_enable_gpio_wakeup();
+
+    esp_light_sleep_start();
+    esp_sleep_wakeup_cause_t cause = esp_sleep_get_wakeup_cause();
+    // Everything is disarmed before the next round, or the level that woke us
+    // would keep firing while it is still being held.
+    gpio_wakeup_disable((gpio_num_t)ENCODER_PUSH_BUTTON);
+    gpio_wakeup_disable((gpio_num_t)ENCODER_PIN_A);
+    gpio_wakeup_disable((gpio_num_t)ENCODER_PIN_B);
+    esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_ALL);
+
+    // An armed pad going low is the gesture: leave the loop and let the wake
+    // path restore the panel and both radios. A timer is our own tick, so the
+    // unit goes straight back to sleep. Anything else arrived without anyone
+    // asking for the screen -- lighting up there would look like the unit
+    // waking on its own, so keep sleeping and only start pacing the retries.
+    if(cause == ESP_SLEEP_WAKEUP_GPIO) break;
+    if(cause != ESP_SLEEP_WAKEUP_TIMER && ++noise >= 8)
+    {
+      paced = true;
+      noise = 0;
+    }
+  }
+
+  // Let the detent finish, then drop its counts: the movement that woke the
+  // unit is a wake-up gesture, never a tuning step. Short but bounded -- a
+  // detent completes in a few milliseconds, and a pad stuck low must not hold
+  // the waking unit here.
+  uint32_t settling = millis();
+  while(knobTouched() && millis() - settling < 300) delay(5);
+  consumeEncoderCounts();
+  // millis() jumped by however long the unit slept, so the sleep timer's
+  // reference point is stale. Without this the main loop would blank the unit
+  // again on its very first pass.
+  touchActivity();
+}
+
 //
 // True when the unit was woken from standby. The rails were driven through the
 // RTC IO mux while the chip was down, so they are handed back to the digital
 // domain here -- before setup() configures any pin.
+//
+// Only the long press standby reaches this: "CPU off" uses light sleep, which
+// never resets the chip, so it has no boot-time state to undo.
 //
 bool standbyWoke()
 {
@@ -306,8 +510,13 @@ bool standbyWoke()
 // the gesture, so a two second press is never rejected on slow boots.
 // When the press was too short this does not return.
 //
+// Only the long press standby has to prove the gesture. "CPU off" is woken by a
+// click or a single detent, and a hold test would throw every one of those back
+// into sleep -- exactly what the mode promises not to do.
+//
 void standbyWakeConfirm()
 {
+  if(esp_sleep_get_wakeup_cause() != ESP_SLEEP_WAKEUP_EXT0) return;
   uint32_t started = millis();
   while(millis() - started < STANDBY_WAKE_HOLD_MS)
   {
@@ -343,8 +552,15 @@ void offTimerTick()
   if(offTimerQuietRestore && (!offTimerDeadline || offTimerRemainingUs() > OFF_TIMER_QUIET_US))
   {
     offTimerQuietRestore = false;
-    netInit(wifiModeIdx);
-    bleInit(bleModeIdx);
+    // A restore queued before the display went dark must not put the links back
+    // on the air behind a black screen: every sleep mode stops Wi-Fi on
+    // purpose, and "CPU off" stops Bluetooth as well. sleepOn() brings them
+    // back itself when the unit wakes.
+    if(!sleepOn())
+    {
+      netInit(wifiModeIdx);
+      bleInit(bleModeIdx);
+    }
     // Stay on the slow advertising interval if the unit is still in standby.
     if(sleepOn() && sleepIsBleStandby()) bleStandbyAdvertising(true);
   }
@@ -681,6 +897,17 @@ bool sleepOn(int x)
       netStop();
       setCpuFrequencyMhz(CPU_FREQ_SLEEP);
     }
+    else if(sleepModeIdx == SLEEP_CPU_OFF)
+    {
+      // "CPU off": the CPU, Wi-Fi and Bluetooth stop, and only the receiver is
+      // left running -- the SI4732 drives the amplifier on its own. This blocks
+      // until the knob is touched, then falls through to the ordinary wake path
+      // below, which brings the panel and the radios back with nothing lost: no
+      // reset, no splash, no gap in the audio. The wake gesture is swallowed
+      // inside cpuOffSleepEnter(), before anything here can act on it.
+      cpuOffSleepEnter();
+      sleepOn(false);
+    }
   }
   else if((x==0) && sleep_on)
   {
@@ -715,6 +942,20 @@ bool sleepOn(int x)
     // swallow the next press on a fast double tap.
     pb1.reset(); // Reset the button state (its timers could be stale due to CPU sleep)
     waitEncoderRelease(0);
+    // "CPU off" stopped both radios on the way in and there is no reset coming
+    // to start them again, so this is the only place they come back. After the
+    // release wait: netInit() associates with the access point and bleInit()
+    // may resume a scan, and either one would hold the encoder release open.
+    if(sleepModeIdx == SLEEP_CPU_OFF)
+    {
+      netInit(wifiModeIdx);
+      bleInit(bleModeIdx);
+      // The panel was drawn while the radios were still down, so its status
+      // icons show them as off. Redraw now that they are up: without this the
+      // bar keeps claiming "no Wi-Fi, no Bluetooth" until something else
+      // happens to invalidate the screen, which reads as a broken wake.
+      drawScreen();
+    }
   }
 
   return(sleep_on);
