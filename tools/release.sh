@@ -21,6 +21,11 @@
 # The firmware version inside the image stays v2.45 (VER_APP 245); the
 # iteration lives only in the tag and the release title.
 #
+# After publishing, every superseded tag is deleted: the repository keeps
+# exactly one tag (the latest release), the Releases page lists newest first,
+# and no download link is ever broken because a release's own tag always
+# outlives the older ones it replaces.
+#
 # Environment:
 #   GITHUB_TOKEN   required, token with repo scope
 #   GITHUB_REPO    default openwrt-1983/ats-mini-cn
@@ -230,6 +235,24 @@ for f in "$DIST"/*.bin "$DIST"/MD5SUMS; do
     exit 1
   fi
 done
+
+# Keep exactly one tag in the repository: the one this release is attached to.
+# A release download URL stops working (404) as soon as its tag is deleted --
+# deleting a tag that a release points at also demotes the release to the
+# "untagged-..." URL -- so the previous tag can only go once the new one has
+# taken over. With the superseded tags removed the Tags list always shows the
+# single latest tag, and the Releases page lists the newest release first.
+echo "==> drop superseded tags"
+PUSH_URL="https://x-access-token:$GITHUB_TOKEN@github.com/$REPO.git"
+OTHERS="$(
+  git ls-remote --tags "$PUSH_URL" 2>/dev/null \
+    | awk '{print $2}' | sed 's|refs/tags/||; s|\^{}$||' | sort -u \
+    | grep -vx -- "$TAG" || true
+)"
+for t in $OTHERS; do
+  git push "$PUSH_URL" ":refs/tags/$t" > /dev/null 2>&1 && echo "    deleted $t" || echo "    could not delete $t" >&2
+done
+git tag -l | grep -vx -- "$TAG" | xargs -r git tag -d > /dev/null
 
 echo
 echo "==> https://github.com/$REPO/releases/tag/$TAG"
