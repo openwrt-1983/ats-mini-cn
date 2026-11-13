@@ -21,6 +21,11 @@ extern ButtonTracker pb1;
 // swallowed rather than applied as a tuning step.
 extern uint32_t consumeEncoderCounts();
 
+// Defined in the main sketch: the ISR setup() attached to the encoder pads
+// with CHANGE. "CPU off" has to detach it for the light sleep, see
+// cpuOffSleepEnter() below.
+extern void rotaryEncoder();
+
 // Current sleep status, returned by sleepOn()
 static bool sleep_on = false;
 
@@ -403,6 +408,19 @@ static void cpuOffSleepEnter()
   bool paced = false;
   uint8_t noise = 0;
 
+  // The wake-up hardware and the encoder ISR share the pad's interrupt-type
+  // field. gpio_wakeup_enable() rewrites GPIO_PINx_INT_TYPE to the level it has
+  // to watch (LOW_LEVEL), and gpio_wakeup_disable() only clears the wake-up
+  // bit -- the level type stays behind while the ISR that setup() attached with
+  // CHANGE is still armed. Holding the knob down to wake the unit would then
+  // re-enter the ISR faster than the CPU can leave it: an interrupt storm that
+  // starves the main loop until the interrupt watchdog resets the chip, which
+  // on screen is the boot banner with the "Hold to reset" countdown while the
+  // finger is still on the knob. Detaching for the whole sleep and re-attaching
+  // on the way out keeps the two users of the pad apart.
+  detachInterrupt(digitalPinToInterrupt(ENCODER_PIN_A));
+  detachInterrupt(digitalPinToInterrupt(ENCODER_PIN_B));
+
   for(;;)
   {
     // Let the gesture that got us here end. The level triggered wake-up would
@@ -474,6 +492,12 @@ static void cpuOffSleepEnter()
       noise = 0;
     }
   }
+
+  // Back to the encoder ISR. attachInterrupt() reprograms the pad interrupt
+  // type to CHANGE, undoing the level trigger the wake-up hardware left
+  // behind, before any encoder edge can be seen again.
+  attachInterrupt(digitalPinToInterrupt(ENCODER_PIN_A), rotaryEncoder, CHANGE);
+  attachInterrupt(digitalPinToInterrupt(ENCODER_PIN_B), rotaryEncoder, CHANGE);
 
   // Let the detent finish, then drop its counts: the movement that woke the
   // unit is a wake-up gesture, never a tuning step. Short but bounded -- a

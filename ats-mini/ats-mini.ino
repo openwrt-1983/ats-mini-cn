@@ -19,6 +19,7 @@
 #include "TcpMode.h"
 #include "Splash.h"
 #include "Web.h"
+#include <esp_system.h>
 #include <stdlib.h>
 #include <time.h>
 
@@ -180,7 +181,16 @@ void setup()
   // patches) on a plain power-up. Releasing early cancels and boots normally.
   // A standby wake arrives with the button down as well; that press is the
   // wake gesture, not a reset request.
-  if(!standbyWake && digitalRead(ENCODER_PUSH_BUTTON)==LOW)
+  //
+  // The gesture is only offered on a genuine power-on. After a watchdog or
+  // panic reboot the finger that is still holding the knob (it woke the unit
+  // moments before the crash) would sit on this prompt for as long as it stays
+  // down, and one crash loop would then wipe every stored setting -- which is
+  // exactly what happened while the "CPU off" wake path was still resetting
+  // the chip. Any other reset reason boots with the stored settings; the
+  // factory reset remains available by holding the button across a power
+  // cycle, as documented.
+  if(!standbyWake && esp_reset_reason() == ESP_RST_POWERON && digitalRead(ENCODER_PUSH_BUTTON)==LOW)
   {
     ledcWrite(PIN_LCD_BL, 255);       // Default value 255 = 100%
     tft.setTextSize(2);
